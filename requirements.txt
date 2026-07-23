@@ -1,0 +1,7 @@
+# Core runtime dependencies (that's all — the HTTP API server uses only the
+# Python standard library).
+requests>=2.28
+lxml>=4.9
+
+# Optional, for running the test suite:
+#   pip install pytest
