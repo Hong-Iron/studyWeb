@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from dataclasses import dataclass, asdict
 from urllib.parse import urlsplit, parse_qs
 
@@ -23,6 +24,8 @@ from lxml import html as LH
 
 from .config import settings
 from . import net
+
+log = logging.getLogger("studyweb.search")
 
 
 @dataclass
@@ -68,6 +71,13 @@ def _dedupe(results: list[SearchResult]) -> list[SearchResult]:
     return out
 
 
+def _host_matches(host: str, domains: tuple[str, ...]) -> bool:
+    """True if ``host`` is one of ``domains`` or a subdomain of one. Matches on
+    a domain boundary so "danawa.com" does NOT match "notdanawa.com"."""
+    host = host.lower()
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
 # --- providers --------------------------------------------------------------
 
 def _bing(query: str, n: int, market: str | None = None) -> list[SearchResult]:
@@ -95,10 +105,57 @@ def _bing(query: str, n: int, market: str | None = None) -> list[SearchResult]:
         ))
         if len(out) >= n:
             break
+    if not out and _looks_blocked(r.text):
+        raise SearchError("bing returned a consent/CAPTCHA page (no results parsed)")
     return out
 
 
-def _wikipedia(query: str, n: int, lang: str = "en") -> list[SearchResult]:
+# Markers that a SERP is a consent wall or bot check rather than real results.
+_BLOCK_MARKERS = ("captcha", "unusual traffic", "verify you are human",
+                  "are you a robot", "consent.bing", "/tou/", "before you continue")
+
+
+def _looks_blocked(html_text: str) -> bool:
+    low = (html_text or "")[:20000].lower()
+    return any(m in low for m in _BLOCK_MARKERS)
+
+
+def _decode_ddg_url(href: str) -> str:
+    """DuckDuckGo HTML wraps results in /l/?uddg=<url-encoded> redirects."""
+    if "uddg=" not in href:
+        return href if href.startswith("http") else "https:" + href if href.startswith("//") else href
+    from urllib.parse import unquote
+    u = parse_qs(urlsplit(href).query).get("uddg", [""])[0]
+    return unquote(u) or href
+
+
+def _duckduckgo(query: str, n: int) -> list[SearchResult]:
+    """No-key general provider via DuckDuckGo's HTML endpoint. Gives ``auto`` a
+    real fallback when Bing serves a consent wall."""
+    r = net.get("https://html.duckduckgo.com/html/", params={"q": query},
+                check_robots=False, use_cache=True)
+    doc = LH.fromstring(r.text)
+    out = []
+    for a in doc.xpath('//a[contains(@class,"result__a")]'):
+        url = _decode_ddg_url(a.get("href", ""))
+        if not url.startswith("http"):
+            continue
+        snip = a.xpath('ancestor::div[contains(@class,"result")]//a[contains(@class,"result__snippet")]')
+        out.append(SearchResult(
+            title=(a.text_content() or "").strip(),
+            url=url,
+            snippet=(snip[0].text_content().strip() if snip else ""),
+            source="duckduckgo",
+        ))
+        if len(out) >= n:
+            break
+    return out
+
+
+def _wikipedia(query: str, n: int, lang: str | None = None) -> list[SearchResult]:
+    if lang is None:
+        # Derive from the configured market, e.g. "ko-KR" -> "ko".
+        lang = (settings.search_market or "en").split("-", 1)[0].lower() or "en"
     r = net.get(f"https://{lang}.wikipedia.org/w/api.php", params={
         "action": "query", "list": "search", "srsearch": query,
         "format": "json", "srlimit": n, "srprop": "snippet",
@@ -138,10 +195,19 @@ def _brave(query: str, n: int) -> list[SearchResult]:
         headers={"X-Subscription-Token": settings.brave_api_key,
                  "Accept": "application/json"},
         timeout=settings.timeout)
+    _raise_for_status(resp, "brave")
     data = resp.json()
     return [SearchResult(title=it.get("title", ""), url=it.get("url", ""),
                          snippet=it.get("description", ""), source="brave")
             for it in data.get("web", {}).get("results", [])[:n]]
+
+
+def _raise_for_status(resp, provider: str) -> None:
+    """Turn a non-2xx keyed-provider response into a clear SearchError instead
+    of an empty result set that looks like 'no hits'."""
+    if resp.status_code >= 400:
+        body = (resp.text or "")[:200]
+        raise SearchError(f"{provider} HTTP {resp.status_code}: {body}")
 
 
 def _tavily(query: str, n: int) -> list[SearchResult]:
@@ -150,6 +216,7 @@ def _tavily(query: str, n: int) -> list[SearchResult]:
     resp = net.session().post("https://api.tavily.com/search", json={
         "api_key": settings.tavily_api_key, "query": query, "max_results": n,
     }, timeout=settings.timeout)
+    _raise_for_status(resp, "tavily")
     data = resp.json()
     return [SearchResult(title=it.get("title", ""), url=it.get("url", ""),
                          snippet=it.get("content", ""), source="tavily",
@@ -163,6 +230,7 @@ def _serpapi(query: str, n: int) -> list[SearchResult]:
     resp = net.session().get("https://serpapi.com/search", params={
         "q": query, "num": n, "api_key": settings.serpapi_api_key, "engine": "google",
     }, timeout=settings.timeout)
+    _raise_for_status(resp, "serpapi")
     data = resp.json()
     return [SearchResult(title=it.get("title", ""), url=it.get("link", ""),
                          snippet=it.get("snippet", ""), source="serpapi")
@@ -176,6 +244,7 @@ def _google_cse(query: str, n: int) -> list[SearchResult]:
         "q": query, "key": settings.google_cse_key, "cx": settings.google_cse_cx,
         "num": min(n, 10),
     }, timeout=settings.timeout)
+    _raise_for_status(resp, "google_cse")
     data = resp.json()
     return [SearchResult(title=it.get("title", ""), url=it.get("link", ""),
                          snippet=it.get("snippet", ""), source="google_cse")
@@ -184,6 +253,7 @@ def _google_cse(query: str, n: int) -> list[SearchResult]:
 
 PROVIDERS = {
     "bing": _bing,
+    "duckduckgo": _duckduckgo,
     "wikipedia": _wikipedia,
     "searxng": _searxng,
     "brave": _brave,
@@ -204,7 +274,9 @@ def _auto_order() -> list[str]:
         order.append("google_cse")
     if settings.searxng_url:
         order.append("searxng")
-    order += ["bing", "wikipedia"]
+    # Two independent no-key general engines so a consent wall on one still
+    # yields results, then Wikipedia as a reliable last resort.
+    order += ["bing", "duckduckgo", "wikipedia"]
     return order
 
 
@@ -229,10 +301,10 @@ def _apply_filters(results, include_domains, exclude_domains):
     results = _dedupe(results)
     if include_domains:
         inc = tuple(d.lower().lstrip(".") for d in include_domains)
-        results = [r for r in results if urlsplit(r.url).netloc.lower().endswith(inc)]
+        results = [r for r in results if _host_matches(urlsplit(r.url).netloc, inc)]
     if exclude_domains:
         exc = tuple(d.lower().lstrip(".") for d in exclude_domains)
-        results = [r for r in results if not urlsplit(r.url).netloc.lower().endswith(exc)]
+        results = [r for r in results if not _host_matches(urlsplit(r.url).netloc, exc)]
     return results
 
 
@@ -273,6 +345,11 @@ def search(query: str, *, provider: str | None = None, max_results: int | None =
         raw2 = _run_providers(f"{query} {brand}", fetch_n, order, market, errors)
         filtered = _apply_filters(raw2, include_domains, exclude_domains)
 
+    if errors:
+        log.debug("search provider errors for %r: %s", query, "; ".join(errors))
+    if not filtered and errors:
+        log.warning("search for %r returned nothing; provider errors: %s",
+                    query, "; ".join(errors))
     if not filtered and not raw and provider != "auto":
         raise SearchError(f"provider {provider!r} returned nothing: {'; '.join(errors)}")
     return filtered[:n]

@@ -5,8 +5,8 @@ import base64
 
 import pytest
 
-from studyweb.search import (SearchResult, _decode_bing_url, _dedupe, search,
-                             SearchError, PROVIDERS)
+from studyweb.search import (SearchResult, _decode_bing_url, _decode_ddg_url,
+                             _dedupe, search, SearchError, PROVIDERS)
 
 
 def test_decode_bing_redirect_url():
@@ -48,9 +48,11 @@ def test_auto_fallback_when_first_provider_fails(monkeypatch):
     def boom(query, n, *rest):
         raise RuntimeError("rate limited")
     good = _fake_provider([SearchResult("ok", "https://ok.com/1", source="wikipedia")])
+    # with no API keys set (test env), auto order is [bing, duckduckgo, wikipedia];
+    # fail the two general engines and the last resort should answer.
     monkeypatch.setitem(PROVIDERS, "bing", boom)
+    monkeypatch.setitem(PROVIDERS, "duckduckgo", boom)
     monkeypatch.setitem(PROVIDERS, "wikipedia", good)
-    # with no API keys set (test env), auto order is exactly [bing, wikipedia]
     out = search("x", provider="auto", max_results=3)
     assert out and out[0].url == "https://ok.com/1"
 
@@ -61,6 +63,16 @@ def test_explicit_provider_error_when_empty(monkeypatch):
     monkeypatch.setitem(PROVIDERS, "bing", boom)
     with pytest.raises(SearchError):
         search("x", provider="bing")
+
+
+def test_decode_ddg_redirect_url():
+    from urllib.parse import quote
+    target = "https://en.wikipedia.org/wiki/Photosynthesis"
+    wrapped = f"//duckduckgo.com/l/?uddg={quote(target, safe='')}&rut=abc"
+    assert _decode_ddg_url(wrapped) == target
+    # protocol-relative direct link is normalised to https
+    assert _decode_ddg_url("//example.com/x") == "https://example.com/x"
+    assert _decode_ddg_url(target) == target
 
 
 def test_blank_query_returns_empty():

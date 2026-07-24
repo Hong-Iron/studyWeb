@@ -53,6 +53,9 @@ class Settings:
     max_retries: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_RETRIES", 2))
     max_bytes: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_BYTES", 4_000_000))
     max_workers: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_WORKERS", 8))
+    # SSRF guard: by default refuse to fetch private/loopback/link-local hosts.
+    # Set true for intranet use where you deliberately fetch internal addresses.
+    allow_private_hosts: bool = field(default_factory=lambda: _env_bool("STUDYWEB_ALLOW_PRIVATE", False))
 
     # ---- Search backends ---------------------------------------------------
     # "auto" tries free providers (bing, wikipedia) then any key-based ones.
@@ -75,11 +78,21 @@ class Settings:
         "STUDYWEB_CACHE_DIR", os.path.expanduser("~/.cache/studyweb")))
     cache_ttl: float = field(default_factory=lambda: _env_float("STUDYWEB_CACHE_TTL", 3600.0))
     cache_enabled: bool = field(default_factory=lambda: _env_bool("STUDYWEB_CACHE", True))
+    # Soft cap on total on-disk cache size (MB); oldest entries are evicted past it.
+    cache_max_mb: float = field(default_factory=lambda: _env_float("STUDYWEB_CACHE_MAX_MB", 500.0))
 
     # ---- Server ------------------------------------------------------------
     # Optional shared secret. If set, the API requires it (Tavily-style:
     # request body {"api_key": ...} or "Authorization: Bearer <key>").
     api_key: str = field(default_factory=lambda: os.environ.get("STUDYWEB_API_KEY", ""))
+    # CORS: empty = send no Access-Control-Allow-Origin (safest for a localhost
+    # service). Set to "*" or an explicit origin only if a browser client needs it.
+    cors_allow_origin: str = field(default_factory=lambda: os.environ.get("STUDYWEB_CORS_ORIGIN", ""))
+    # Reject request bodies larger than this many bytes (defends _body()).
+    max_request_bytes: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_REQUEST_BYTES", 1_000_000))
+    # Cap on simultaneous research/rag pipelines so a burst of clients can't
+    # fan out into an unbounded number of outbound fetches.
+    max_concurrent_requests: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_CONCURRENT_REQUESTS", 4))
 
     def as_dict(self) -> dict:
         d = asdict(self)

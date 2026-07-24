@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "studyweb"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A local, free, private web search + crawl + RAG toolkit — a self-hosted replacement for Tavily, with a drop-in API and LM Studio tool integration."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,6 +36,27 @@ Issues = "https://github.com/your-org/studyweb/issues"
 [tool.setuptools]
 packages = ["studyweb"]
 
+[tool.setuptools.dynamic]
+version = { attr = "studyweb.__version__" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4"]
+# BLE001 (blind except) is used deliberately at network/tool boundaries where
+# every failure must be captured and reported rather than propagated.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# lxml has no stubs; the codebase is otherwise fully annotated.
+

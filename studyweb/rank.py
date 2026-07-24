@@ -12,6 +12,9 @@ from dataclasses import dataclass
 
 # \w with re.UNICODE keeps Hangul syllables and CJK as word characters.
 _TOKEN_RE = re.compile(r"[0-9A-Za-zÀ-ɏ가-힣一-鿿]+", re.UNICODE)
+# Runs where whitespace does not separate words (Korean/CJK/Kana). Such tokens
+# get indexed as character bigrams too, so "삼성전자는" still matches "삼성전자".
+_CJK_RE = re.compile(r"[가-힣一-鿿ぁ-ゟ゠-ヿ]")
 
 _STOP = set("""
 a an and are as at be by for from has have he in is it its of on that the to was were will with
@@ -21,9 +24,22 @@ this these those or nor not but if then else when while do does did done being b
 """.split())
 
 
+def _cjk_bigrams(token: str) -> list[str]:
+    return [token[i:i + 2] for i in range(len(token) - 1)]
+
+
 def tokenize(text: str) -> list[str]:
-    return [t.lower() for t in _TOKEN_RE.findall(text or "")
-            if t.lower() not in _STOP and len(t) > 1]
+    out: list[str] = []
+    for raw in _TOKEN_RE.findall(text or ""):
+        t = raw.lower()
+        if len(t) <= 1 or t in _STOP:
+            continue
+        out.append(t)
+        if _CJK_RE.search(t):
+            # Add character bigrams so morphological variation (attached
+            # particles, compounding) doesn't tank recall on Korean/CJK.
+            out.extend(_cjk_bigrams(t))
+    return out
 
 
 @dataclass

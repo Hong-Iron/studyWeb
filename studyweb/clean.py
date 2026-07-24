@@ -152,11 +152,16 @@ def quality_score(text: str) -> float:
 # --- chunk ------------------------------------------------------------------
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?。！？])\s+")
+_CJK_CHAR = re.compile(r"[가-힣一-鿿ぁ-ゟ゠-ヿ]")
 
 
 def _est_tokens(s: str) -> int:
-    # cheap, model-agnostic estimate (~4 chars/token for mixed en/ko)
-    return max(1, len(s) // 4)
+    # Script-aware estimate: Latin text is ~4 chars/token, but CJK packs far
+    # more tokens per character (~2), so counting them the same way undercounts
+    # Korean/Chinese/Japanese roughly 2x.
+    cjk = len(_CJK_CHAR.findall(s))
+    other = len(s) - cjk
+    return max(1, cjk // 2 + other // 4)
 
 
 def _split_long(paragraph: str, size: int) -> list[str]:

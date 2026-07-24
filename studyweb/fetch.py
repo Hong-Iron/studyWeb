@@ -57,7 +57,7 @@ def fetch_page(url: str, *, use_cache: bool = True) -> Document:
                         content_type=ctype, error=f"unsupported content-type: {ctype}",
                         fetched_at=time.time())
 
-    ex = extract(resp.content, resp.url)
+    ex = extract(resp.content, resp.url, encoding=resp.declared_encoding)
     return Document(
         url=url, final_url=resp.url, status=resp.status,
         title=ex.title, text=ex.text, markdown=ex.markdown,

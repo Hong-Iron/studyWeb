@@ -17,6 +17,13 @@ def _same_site(a: str, b: str) -> bool:
     return ha.removeprefix("www.") == hb.removeprefix("www.")
 
 
+def _host_in(host: str, allow: tuple[str, ...]) -> bool:
+    """Domain-boundary match: 'danawa.com' matches 'danawa.com' and
+    'x.danawa.com' but not 'notdanawa.com'."""
+    host = host.lower().removeprefix("www.")
+    return any(host == d or host.endswith("." + d) for d in allow)
+
+
 def crawl(seed: str, *, depth: int = 1, max_pages: int = 20,
           same_domain: bool = True, allow_domains: list[str] | None = None,
           use_cache: bool = True) -> list[Document]:
@@ -42,7 +49,7 @@ def crawl(seed: str, *, depth: int = 1, max_pages: int = 20,
             if nu in seen:
                 continue
             if allow:
-                if not urlsplit(link.url).netloc.lower().removeprefix("www.").endswith(allow):
+                if not _host_in(urlsplit(link.url).netloc, allow):
                     continue
             elif same_domain and not _same_site(seed, link.url):
                 continue

@@ -228,12 +228,14 @@ See [`.env.example`](./.env.example) for the full list of configuration knobs.
 
 ```bash
 pip install pytest
-python -m pytest         # 45 offline, deterministic tests
+python -m pytest         # offline, deterministic tests
 ```
 
 The suite mocks the network, so it's fast and runs anywhere. Tests include
 regressions for real bugs found while validating against live sites (namespaced
-tags, over-broad noise removal, Bing redirect decoding, citation-list leakage).
+tags, over-broad noise removal, Bing redirect decoding, citation-list leakage)
+plus the hardening set (auth on every route, domain-boundary filtering, charset
+handling, the SSRF guard, and input validation).
 
 ## Deploy
 
@@ -242,6 +244,29 @@ docker build -t studyweb .
 docker run -p 8787:8787 studyweb
 # -> Tavily-replacement API on http://localhost:8787
 ```
+
+The image runs as a non-root user and ships a `/health` HEALTHCHECK.
+
+### Running in production
+
+The API is safe to run locally with no configuration, but before exposing it —
+even on a LAN — set at least these (see [`.env.example`](./.env.example)):
+
+- **`STUDYWEB_API_KEY`** — require a shared secret on every data route
+  (`/search`, `/extract`, `/rag`). `/health` and `/tool-schema` stay public.
+- **SSRF** — the server refuses to fetch private/loopback/link-local hosts by
+  default. Only set `STUDYWEB_ALLOW_PRIVATE=true` for deliberate intranet use.
+- **`STUDYWEB_CORS_ORIGIN`** — left empty (no CORS header) so a random web page
+  can't drive your API from the browser. Set an explicit origin only if a
+  browser client needs it; avoid `*` when the API is unauthenticated.
+- **`STUDYWEB_MAX_CONCURRENT_REQUESTS`** caps simultaneous search/RAG pipelines,
+  and `STUDYWEB_MAX_REQUEST_BYTES` bounds request bodies — both guard against a
+  single client fanning out into unbounded outbound fetches.
+- Put the cache dir on a writable volume; it self-evicts past
+  `STUDYWEB_CACHE_MAX_MB`. Run behind a reverse proxy (TLS) if remote.
+
+`SIGTERM`/`SIGINT` trigger a graceful shutdown, so it stops cleanly under
+Docker/systemd.
 
 ## License
 

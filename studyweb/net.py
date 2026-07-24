@@ -5,12 +5,16 @@ the network goes through here."""
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import logging
 import os
+import socket
 import threading
 import time
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from email.utils import parsedate_to_datetime
 from typing import Callable, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,6 +22,8 @@ import requests
 
 from .config import settings
 from . import robots
+
+log = logging.getLogger("studyweb.net")
 
 
 class FetchError(Exception):
@@ -42,10 +48,16 @@ class Response:
 
     @property
     def encoding(self) -> str:
-        ctype = self.headers.get("content-type", "")
+        return self.declared_encoding or "utf-8"
+
+    @property
+    def declared_encoding(self) -> str | None:
+        """Charset from the HTTP Content-Type header, or None if not declared
+        (so the HTML parser can fall back to the page's own <meta charset>)."""
+        ctype = self.headers.get("content-type", "") or self.headers.get("Content-Type", "")
         if "charset=" in ctype:
-            return ctype.split("charset=", 1)[1].split(";", 1)[0].strip() or "utf-8"
-        return "utf-8"
+            return ctype.split("charset=", 1)[1].split(";", 1)[0].strip() or None
+        return None
 
     @property
     def content_type(self) -> str:
@@ -77,6 +89,36 @@ def session() -> requests.Session:
         return _session
 
 
+# --- SSRF guard -------------------------------------------------------------
+
+def _is_private_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return (addr.is_private or addr.is_loopback or addr.is_link_local
+            or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
+
+
+def _guard_ssrf(host: str) -> None:
+    """Refuse to fetch hosts that resolve to private/loopback/link-local IPs.
+    Blocks the classic cloud-metadata / internal-service SSRF via /extract and
+    /rag. Disable with STUDYWEB_ALLOW_PRIVATE=true for intranet use."""
+    if settings.allow_private_hosts:
+        return
+    bare = host.split(":", 1)[0]
+    try:
+        infos = socket.getaddrinfo(bare, None)
+    except socket.gaierror:
+        return  # let the normal request fail with a clear network error
+    for info in infos:
+        ip = info[4][0]
+        if _is_private_ip(ip):
+            raise FetchError(
+                f"refusing to fetch private/loopback address for host {bare!r} "
+                f"({ip}); set STUDYWEB_ALLOW_PRIVATE=true to allow")
+
+
 # --- per-host rate limiting -------------------------------------------------
 
 _host_locks: dict[str, threading.Lock] = {}
@@ -84,8 +126,8 @@ _host_last: dict[str, float] = {}
 _hosts_guard = threading.Lock()
 
 
-def _throttle(host: str) -> None:
-    delay = settings.per_host_delay
+def _throttle(host: str, delay: float | None = None) -> None:
+    delay = settings.per_host_delay if delay is None else delay
     if delay <= 0:
         return
     with _hosts_guard:
@@ -142,6 +184,49 @@ def _cache_put(key: str, resp: Response) -> None:
         os.replace(tmp, path)
     except Exception:
         pass  # cache failures are never fatal
+    _maybe_evict_cache()
+
+
+_evict_counter = 0
+_evict_lock = threading.Lock()
+
+
+def _maybe_evict_cache() -> None:
+    """Occasionally enforce ``cache_max_mb`` by deleting oldest entries.
+    Sampled (every ~50 writes) so it adds negligible overhead to the hot path."""
+    global _evict_counter
+    if settings.cache_max_mb <= 0:
+        return
+    with _evict_lock:
+        _evict_counter += 1
+        if _evict_counter % 50 != 1:
+            return
+    budget = int(settings.cache_max_mb * 1024 * 1024)
+    try:
+        entries = []
+        total = 0
+        for root, _dirs, files in os.walk(settings.cache_dir):
+            for name in files:
+                fp = os.path.join(root, name)
+                try:
+                    st = os.stat(fp)
+                except OSError:
+                    continue
+                entries.append((st.st_mtime, st.st_size, fp))
+                total += st.st_size
+        if total <= budget:
+            return
+        entries.sort()  # oldest first
+        for _mtime, size, fp in entries:
+            if total <= budget:
+                break
+            try:
+                os.remove(fp)
+                total -= size
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 # --- fetching ---------------------------------------------------------------
@@ -162,6 +247,7 @@ def get(url: str, *, params: dict | None = None, use_cache: bool = True,
         raise FetchError(f"unsupported scheme: {parts.scheme!r}")
     host = parts.netloc.lower()
 
+    _guard_ssrf(host)
     if check_robots and settings.respect_robots and not robots.allowed(url):
         raise FetchError(f"blocked by robots.txt: {url}")
 
@@ -171,14 +257,30 @@ def get(url: str, *, params: dict | None = None, use_cache: bool = True,
         if cached is not None:
             return cached
 
+    # Prefer a robots-declared Crawl-delay over the flat per-host delay.
+    delay = settings.per_host_delay
+    if check_robots and settings.respect_robots:
+        cd = robots.crawl_delay(url)
+        if cd is not None:
+            delay = max(delay, cd)
+
     headers = {"Accept": accept} if accept else None
     last_exc: Exception | None = None
     for attempt in range(settings.max_retries + 1):
-        _throttle(host)
+        _throttle(host, delay)
         try:
             r = session().get(url, params=params, headers=headers,
                               timeout=settings.timeout, stream=True,
                               allow_redirects=True)
+            # A redirect may have crossed onto a disallowed path or a private
+            # host — re-check the final URL before we read the body.
+            if r.url != url:
+                final_host = urlsplit(r.url).netloc.lower()
+                if final_host != host:
+                    _guard_ssrf(final_host)
+                if check_robots and settings.respect_robots and not robots.allowed(r.url):
+                    r.close()
+                    raise FetchError(f"redirect blocked by robots.txt: {r.url}")
             chunks, total = [], 0
             for chunk in r.iter_content(64 * 1024):
                 chunks.append(chunk)
@@ -189,7 +291,9 @@ def get(url: str, *, params: dict | None = None, use_cache: bool = True,
             resp = Response(url=r.url, status=r.status_code,
                             content=b"".join(chunks), headers=dict(r.headers))
             if resp.status in (429, 500, 502, 503, 504) and attempt < settings.max_retries:
-                time.sleep(1.5 * (attempt + 1))
+                wait = _retry_after(resp.headers) or 1.5 * (attempt + 1)
+                log.debug("retrying %s after %.1fs (status %s)", url, wait, resp.status)
+                time.sleep(wait)
                 continue
             if use_cache:
                 _cache_put(cache_key, resp)
@@ -202,6 +306,22 @@ def get(url: str, *, params: dict | None = None, use_cache: bool = True,
                 time.sleep(1.0 * (attempt + 1))
                 continue
     raise FetchError(f"failed to fetch {url}: {last_exc}")
+
+
+def _retry_after(headers: dict) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds."""
+    val = headers.get("Retry-After") or headers.get("retry-after")
+    if not val:
+        return None
+    val = val.strip()
+    if val.isdigit():
+        return min(float(val), 30.0)  # cap so a hostile header can't hang us
+    try:
+        dt = parsedate_to_datetime(val)
+        secs = (dt.timestamp() - time.time())
+        return max(0.0, min(secs, 30.0))
+    except (TypeError, ValueError):
+        return None
 
 
 def get_many(urls: Iterable[str], worker: Callable[[str], object] | None = None,

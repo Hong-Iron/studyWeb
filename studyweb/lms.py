@@ -98,52 +98,80 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n] + " …[truncated]"
 
 
+def _req_str(args: dict, key: str) -> str:
+    """Fetch a required string arg or raise ValueError with a model-readable
+    message (so a malformed tool call becomes an error the model can fix,
+    not a KeyError that kills the run)."""
+    v = args.get(key)
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError(f"missing or invalid required argument {key!r}")
+    return v.strip()
+
+
+def _opt_int(args: dict, key: str, default: int) -> int:
+    try:
+        return int(args.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def dispatch_tool(name: str, arguments: dict, *, budget_chars: int = 2400) -> dict:
-    """Execute a tool call. Returns a small dict suitable for a tool message."""
+    """Execute a tool call. Returns a small dict suitable for a tool message.
+    Never raises: bad arguments and backend failures come back as {"error": ...}
+    so the calling model can recover instead of the agent loop crashing."""
     args = arguments or {}
-    if name == "web_search":
-        res = _research_fn(
-            args["query"], max_results=int(args.get("max_results", 5)),
-            search_depth="advanced", include_answer=True, include_raw_content=False,
-            include_domains=args.get("include_domains"))
-        return {
-            "query": res["query"], "answer": _truncate(res.get("answer", ""), 800),
-            "results": [
-                {"title": r["title"], "url": r["url"],
-                 "content": _truncate(r["content"], budget_chars // max(len(res["results"]), 1))}
-                for r in res["results"][:int(args.get("max_results", 5))]
-            ],
-        }
-    if name == "site_search":
-        res = _research_fn(
-            args["query"], max_results=int(args.get("max_results", 5)),
-            search_depth="advanced", include_answer=True, include_raw_content=False,
-            site=args["site"])
-        return {
-            "site": args["site"], "query": res["query"],
-            "answer": _truncate(res.get("answer", ""), 800),
-            "results": [
-                {"title": r["title"], "url": r["url"],
-                 "content": _truncate(r["content"], budget_chars // max(len(res["results"]), 1))}
-                for r in res["results"][:int(args.get("max_results", 5))]
-            ],
-        }
-    if name == "open_url":
-        d = fetch_page(args["url"])
-        if not d.ok:
-            return {"url": args["url"], "error": d.error or f"status {d.status}"}
-        return {"url": d.url, "title": d.title, "content": _truncate(d.markdown or d.text, 3500)}
-    if name == "collect_rag":
-        rag = _build_rag(query=args["query"],
-                         max_results=int(args.get("max_results", 4)))
-        return {"query": rag["query"], "n_documents": rag["n_documents"],
-                "n_chunks": rag["n_chunks"],
-                "sample_chunks": [
-                    {"source_url": c["metadata"]["source_url"],
-                     "text": _truncate(c["text"], 300)}
-                    for c in rag["chunks"][:5]
-                ]}
-    return {"error": f"unknown tool: {name}"}
+    try:
+        if name == "web_search":
+            n = _opt_int(args, "max_results", 5)
+            res = _research_fn(
+                _req_str(args, "query"), max_results=n,
+                search_depth="advanced", include_answer=True, include_raw_content=False,
+                include_domains=args.get("include_domains"))
+            return {
+                "query": res["query"], "answer": _truncate(res.get("answer", ""), 800),
+                "results": [
+                    {"title": r["title"], "url": r["url"],
+                     "content": _truncate(r["content"], budget_chars // max(len(res["results"]), 1))}
+                    for r in res["results"][:n]
+                ],
+            }
+        if name == "site_search":
+            n = _opt_int(args, "max_results", 5)
+            site = _req_str(args, "site")
+            res = _research_fn(
+                _req_str(args, "query"), max_results=n,
+                search_depth="advanced", include_answer=True, include_raw_content=False,
+                site=site)
+            return {
+                "site": site, "query": res["query"],
+                "answer": _truncate(res.get("answer", ""), 800),
+                "results": [
+                    {"title": r["title"], "url": r["url"],
+                     "content": _truncate(r["content"], budget_chars // max(len(res["results"]), 1))}
+                    for r in res["results"][:n]
+                ],
+            }
+        if name == "open_url":
+            url = _req_str(args, "url")
+            d = fetch_page(url)
+            if not d.ok:
+                return {"url": url, "error": d.error or f"status {d.status}"}
+            return {"url": d.url, "title": d.title, "content": _truncate(d.markdown or d.text, 3500)}
+        if name == "collect_rag":
+            rag = _build_rag(query=_req_str(args, "query"),
+                             max_results=_opt_int(args, "max_results", 4))
+            return {"query": rag["query"], "n_documents": rag["n_documents"],
+                    "n_chunks": rag["n_chunks"],
+                    "sample_chunks": [
+                        {"source_url": c["metadata"]["source_url"],
+                         "text": _truncate(c["text"], 300)}
+                        for c in rag["chunks"][:5]
+                    ]}
+        return {"error": f"unknown tool: {name}"}
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — surface backend errors to the model
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 def tool_result_message(call_id: str, name: str, result: dict) -> dict:

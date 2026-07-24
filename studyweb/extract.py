@@ -104,14 +104,31 @@ def _extract_meta(doc, url: str) -> dict:
     return {k: v for k, v in m.items() if v}
 
 
+_TITLE_SEP_RE = re.compile(r"\s*[|–—·:-]\s*")
+
+
+def _trim_site_suffix(title: str, site_name: str) -> str:
+    """Drop a trailing ' - Site Name' / ' | Site Name' suffix when it exactly
+    matches the page's og:site_name. Conservative: only exact tail matches."""
+    if not site_name:
+        return title
+    site = site_name.strip().lower()
+    for sep in (" | ", " - ", " – ", " — ", " · ", " :: "):
+        if title.lower().endswith(sep + site):
+            trimmed = title[: -(len(sep) + len(site))].strip()
+            if trimmed:
+                return trimmed
+    return title
+
+
 def _title(doc, url: str) -> str:
+    site_name = _meta(doc, "og:site_name")
     for cand in (_meta(doc, "og:title"),
                  (doc.xpath("//title/text()") or [""])[0],
                  (doc.xpath("//h1//text()") or [""])[0]):
         cand = _clean_text(cand)
         if cand:
-            # trim trailing " - Site Name" style suffixes lightly
-            return cand
+            return _trim_site_suffix(cand, site_name)
     return urlsplit(url).netloc
 
 
@@ -314,14 +331,50 @@ def _collect_links(doc, base_url: str) -> list[Link]:
     return out
 
 
-def extract(html_source: str | bytes, url: str) -> Extracted:
-    """Extract clean content from an HTML document."""
-    if isinstance(html_source, bytes):
-        html_source = html_source.decode("utf-8", "replace")
+def _decode(raw: bytes, encoding: str | None) -> str:
+    for enc in (encoding, "utf-8"):
+        if enc:
+            try:
+                return raw.decode(enc)
+            except (LookupError, UnicodeDecodeError):
+                continue
+    return raw.decode("utf-8", "replace")
+
+
+def _parse(raw: bytes, encoding: str | None):
+    """Parse HTML bytes. Passing bytes (not str) lets lxml honour the page's own
+    ``<meta charset>`` / BOM; an explicit ``encoding`` (from the HTTP header)
+    overrides it. This is what keeps EUC-KR / Shift-JIS pages from becoming
+    mojibake."""
+    parser = LH.HTMLParser(encoding=encoding) if encoding else LH.HTMLParser()
+    return LH.fromstring(raw, parser=parser)
+
+
+def _table_to_passage(block: str) -> str:
+    """Flatten a Markdown table block into prose-ish text so spec/price tables
+    (the point of a shopping query) still reach BM25 ranking and the answer."""
+    lines = []
+    for line in block.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if all(set(c) <= set("-: ") for c in cells):  # skip the |---|---| rule
+            continue
+        cells = [c for c in cells if c]
+        if cells:
+            lines.append(" · ".join(cells))
+    return "\n".join(lines)
+
+
+def extract(html_source: str | bytes, url: str, *, encoding: str | None = None) -> Extracted:
+    """Extract clean content from an HTML document.
+
+    ``encoding`` is the charset from the HTTP ``Content-Type`` header, if the
+    server declared one; when omitted, the page's own meta charset is used.
+    """
+    raw = html_source if isinstance(html_source, bytes) else html_source.encode("utf-8", "replace")
     try:
-        doc = LH.fromstring(html_source)
+        doc = _parse(raw, encoding)
     except (etree.ParserError, ValueError):
-        text = _clean_text(re.sub(r"<[^>]+>", " ", html_source))
+        text = _clean_text(re.sub(r"<[^>]+>", " ", _decode(raw, encoding)))
         return Extracted(url=url, text=text, markdown=text,
                          passages=[text[:1000]] if text else [])
 
@@ -333,7 +386,7 @@ def extract(html_source: str | bytes, url: str) -> Extracted:
     links = _collect_links(doc, base)
 
     # Work on a copy for content so link collection above sees the full page.
-    content_tree = LH.fromstring(html_source)
+    content_tree = _parse(raw, encoding)
     _strip_hard(content_tree)          # drop script/style/etc across whole doc
     main = _pick_main(content_tree)    # choose the main content container
     _strip_chrome(main)                # remove nav/menu chrome *within* it
@@ -347,8 +400,15 @@ def extract(html_source: str | bytes, url: str) -> Extracted:
         or _clean_text(main.text_content())
 
     # Passages: paragraph-ish blocks, good granularity for BM25 ranking.
-    passages = [b.strip() for b in blocks
-                if len(b.strip()) >= 40 and not b.startswith("|")]
+    passages = []
+    for b in blocks:
+        b = b.strip()
+        if b.startswith("|"):  # a table — flatten so its cells are searchable
+            flat = _table_to_passage(b)
+            if len(flat) >= 40:
+                passages.append(flat)
+        elif len(b) >= 40:
+            passages.append(b)
     if not passages and text:
         passages = [text[i:i + 700] for i in range(0, min(len(text), 4000), 700)]
 
