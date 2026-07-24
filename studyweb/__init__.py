@@ -23,6 +23,8 @@ from .crawl import crawl
 from .collect import Corpus
 from .research import research, extract_urls, build_rag
 from .clean import clean, to_chunks, chunk_text
+from .structured import extract_structured
+from .dataextract import extract_data
 
 __version__ = "0.1.0"
 
@@ -39,6 +41,8 @@ __all__ = [
     "research",
     "extract_urls",
     "build_rag",
+    "extract_structured",
+    "extract_data",
     "clean",
     "to_chunks",
     "chunk_text",

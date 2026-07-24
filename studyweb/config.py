@@ -73,6 +73,23 @@ class Settings:
     default_max_results: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_RESULTS", 6))
     passage_chars: int = field(default_factory=lambda: _env_int("STUDYWEB_PASSAGE_CHARS", 900))
 
+    # ---- Structured data extraction (general, cross-site) ------------------
+    # Local OpenAI-compatible LLM used for schema-guided extraction when a page
+    # has no structured markup (JSON-LD/microdata). Defaults to LM Studio.
+    llm_base_url: str = field(default_factory=lambda: os.environ.get("STUDYWEB_LLM_BASE", "http://localhost:1234/v1"))
+    llm_model: str = field(default_factory=lambda: os.environ.get("STUDYWEB_LLM_MODEL", ""))
+    llm_timeout: float = field(default_factory=lambda: _env_float("STUDYWEB_LLM_TIMEOUT", 120.0))
+
+    # ---- Headless browser fallback (for JS-rendered pages) ----------------
+    # When a static fetch yields thin/JS-shell content, optionally re-fetch via
+    # a headless Chrome (system binary, subprocess). Off => never render.
+    render_enabled: bool = field(default_factory=lambda: _env_bool("STUDYWEB_RENDER", True))
+    chrome_path: str = field(default_factory=lambda: os.environ.get("STUDYWEB_CHROME", ""))
+    render_timeout: float = field(default_factory=lambda: _env_float("STUDYWEB_RENDER_TIMEOUT", 25.0))
+    # A static result shorter than this (chars of extracted text) is treated as
+    # "thin" and triggers the headless fallback when rendering is enabled.
+    render_thin_threshold: int = field(default_factory=lambda: _env_int("STUDYWEB_RENDER_THIN", 200))
+
     # ---- Cache -------------------------------------------------------------
     cache_dir: str = field(default_factory=lambda: os.environ.get(
         "STUDYWEB_CACHE_DIR", os.path.expanduser("~/.cache/studyweb")))

@@ -141,6 +141,19 @@ class Handler(BaseHTTPRequestHandler):
                 with _pipeline_gate:
                     return self._send(200, _extract_urls(
                         urls, include_raw_content=bool(body.get("include_raw_content", True))))
+            if path == "/extract-data":
+                url_ = body.get("url")
+                if not url_ or not str(url_).strip():
+                    raise BadRequest("'url' is required")
+                render_mode = body.get("render", "auto")
+                if render_mode not in ("auto", "always", "never"):
+                    raise BadRequest("'render' must be auto|always|never")
+                from .dataextract import extract_data
+                with _pipeline_gate:
+                    return self._send(200, extract_data(
+                        str(url_), schema=body.get("fields") or body.get("schema"),
+                        render_mode=render_mode,
+                        use_llm=bool(body.get("use_llm", True))))
             if path == "/rag":
                 if not body.get("query") and not body.get("urls"):
                     raise BadRequest("provide 'query' and/or 'urls'")
@@ -185,7 +198,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"studyweb API on http://{host}:{port}  "
-          f"(POST /search  /extract  /rag  ·  GET /health  /tool-schema)")
+          f"(POST /search  /extract  /extract-data  /rag  ·  GET /health  /tool-schema)")
     if settings.api_key:
         print("  auth: STUDYWEB_API_KEY required")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, asdict
+from urllib.parse import urlsplit
 
 from . import net
 from .extract import extract, Link
@@ -58,6 +59,19 @@ def fetch_page(url: str, *, use_cache: bool = True) -> Document:
                         fetched_at=time.time())
 
     ex = extract(resp.content, resp.url, encoding=resp.declared_encoding)
+
+    # A site adapter may override extraction to rescue fields the generic
+    # pipeline drops (e.g. prices inside a configurator <form>).
+    from . import siteadapters
+    adapter = siteadapters.adapter_for(urlsplit(resp.url).netloc)
+    if adapter is not None:
+        try:
+            override = adapter.extract(resp.url, resp.content, resp.declared_encoding)
+            if override is not None:
+                ex = override
+        except Exception:  # noqa: BLE001 — never let an adapter break a fetch
+            pass
+
     return Document(
         url=url, final_url=resp.url, status=resp.status,
         title=ex.title, text=ex.text, markdown=ex.markdown,

@@ -90,6 +90,36 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_data",
+            "description": (
+                "Extract STRUCTURED data (e.g. product name, price, specs, options) "
+                "from any web page as JSON. Works across sites: it reads standard "
+                "product markup when present, otherwise reads the page content to "
+                "pull the requested fields. Use this when the user wants specific "
+                "structured facts (prices, specs, a component list) from a URL, "
+                "rather than the raw page text. Falls back to a headless browser for "
+                "JavaScript-rendered pages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The page to extract from."},
+                    "fields": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": 'Fields to extract, e.g. ["name","price","gpu_options"].',
+                    },
+                    "render": {
+                        "type": "string", "enum": ["auto", "always", "never"],
+                        "description": "Headless-browser rendering (default auto).",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 
@@ -167,6 +197,17 @@ def dispatch_tool(name: str, arguments: dict, *, budget_chars: int = 2400) -> di
                          "text": _truncate(c["text"], 300)}
                         for c in rag["chunks"][:5]
                     ]}
+        if name == "extract_data":
+            from .dataextract import extract_data as _extract_data
+            fields = args.get("fields")
+            render_mode = args.get("render", "auto")
+            if render_mode not in ("auto", "always", "never"):
+                render_mode = "auto"
+            res = _extract_data(_req_str(args, "url"), schema=fields or None,
+                                render_mode=render_mode)
+            return {"url": res["url"], "method": res["method"],
+                    "rendered": res["rendered"], "data": res["data"],
+                    "warnings": res["warnings"]}
         return {"error": f"unknown tool: {name}"}
     except ValueError as exc:
         return {"error": str(exc)}

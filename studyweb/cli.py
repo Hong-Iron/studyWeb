@@ -80,6 +80,14 @@ def cmd_rag(a) -> int:
     return 0
 
 
+def cmd_extract_data(a) -> int:
+    from .dataextract import extract_data
+    res = extract_data(a.url, schema=a.field or None,
+                       render_mode=a.render, use_llm=not a.no_llm)
+    _print_json(res)
+    return 0 if res.get("data") is not None else 1
+
+
 def cmd_serve(a) -> int:
     serve(host=a.host, port=a.port)
     return 0
@@ -117,6 +125,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--overlap", type=int, default=150)
     r.add_argument("--provider", default=None); r.add_argument("--out", default=None)
     r.add_argument("--json", action="store_true"); r.set_defaults(func=cmd_rag)
+
+    ed = sub.add_parser("extract-data", help="extract structured data from a URL (JSON-LD/microdata + local LLM, headless fallback)")
+    ed.add_argument("url")
+    ed.add_argument("--field", action="append", help="field to extract, repeatable (e.g. --field name --field price)")
+    ed.add_argument("--render", choices=["auto", "always", "never"], default="auto")
+    ed.add_argument("--no-llm", action="store_true", help="structured markup only, skip the LLM fallback")
+    ed.set_defaults(func=cmd_extract_data)
 
     sv = sub.add_parser("serve", help="run the HTTP API")
     sv.add_argument("--host", default="127.0.0.1"); sv.add_argument("--port", type=int, default=8787)

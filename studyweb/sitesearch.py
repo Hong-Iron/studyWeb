@@ -159,11 +159,25 @@ def site_search(site: str, query: str, *, max_results: int = 6,
     query = query.strip()
     if not query:
         return []
+
+    site_norm = _norm_site(site)
+
+    # Sites with a bespoke adapter (no keyword search, or prices hidden in a
+    # configurator form) are handled entirely by the adapter.
+    from . import siteadapters
+    adapter = siteadapters.adapter_for(site_norm)
+    if adapter is not None:
+        try:
+            res = adapter.search(query, max_results)
+            if res:
+                return res
+        except Exception:  # noqa: BLE001 — fall back to the generic path
+            pass
+
     url = build_search_url(site, query)
     if not url:
         return []
 
-    site_norm = _norm_site(site)
     pattern = _result_pattern(site_norm)
     page = fetch_page(url)
     if not page.ok:
