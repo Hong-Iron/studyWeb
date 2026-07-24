@@ -133,9 +133,24 @@ def extract_data(url: str, *, schema=None, render_mode: str = "auto",
     schema = schema or ["name", "price", "currency", "brand", "description", "specs"]
     warnings: list[str] = []
     rendered = False
+    recovered_from = None
 
     # 1) acquire (static first)
     doc = fetch_page(url)
+
+    # If the URL failed (often a hallucinated/404 link), recover the intended
+    # page by searching the same site before falling through to render/LLM.
+    if not doc.ok and settings.recover_urls:
+        from .recover import open_best
+        rdoc, real_url, cands = open_best(
+            url, max_candidates=settings.recover_max_candidates)
+        if rdoc is not None and rdoc.ok:
+            recovered_from, url, doc = url, real_url, rdoc
+            warnings.append(f"원래 URL 실패 → 복구된 URL 사용: {real_url}")
+        elif cands:
+            warnings.append("요청 URL을 열 수 없음; 후보: "
+                            + ", ".join(c.url for c in cands[:3]))
+
     html: bytes | None = None
     enc = None
 
@@ -170,7 +185,8 @@ def extract_data(url: str, *, schema=None, render_mode: str = "auto",
     # 4) structured hit? return it (cheap path)
     if data and (data.get("price") or data.get("name")):
         return {"url": url, "method": f"structured:{data['source']}",
-                "rendered": rendered, "data": data, "warnings": warnings}
+                "rendered": rendered, "recovered_from": recovered_from,
+                "data": data, "warnings": warnings}
 
     # 5) LLM fallback
     if use_llm:
@@ -178,16 +194,18 @@ def extract_data(url: str, *, schema=None, render_mode: str = "auto",
         if not content:
             warnings.append("no readable content to extract from")
             return {"url": url, "method": "none", "rendered": rendered,
-                    "data": None, "warnings": warnings}
+                    "recovered_from": recovered_from, "data": None,
+                    "warnings": warnings}
         try:
             extracted = llm_extract(content, schema)
             return {"url": url, "method": "llm", "rendered": rendered,
-                    "data": extracted, "warnings": warnings}
+                    "recovered_from": recovered_from, "data": extracted,
+                    "warnings": warnings}
         except LLMError as exc:
             warnings.append(str(exc))
 
     return {"url": url, "method": "none", "rendered": rendered,
-            "data": None, "warnings": warnings}
+            "recovered_from": recovered_from, "data": None, "warnings": warnings}
 
 
 def _rendered_document(url: str, html_str: str):

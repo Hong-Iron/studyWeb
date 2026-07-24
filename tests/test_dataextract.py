@@ -135,6 +135,7 @@ def test_cascade_falls_back_to_llm(monkeypatch):
 
 
 def test_cascade_warns_when_render_wanted_but_unavailable(monkeypatch):
+    monkeypatch.setattr(settings, "recover_urls", False)  # isolate the render path
     monkeypatch.setattr(dataextract, "fetch_page", lambda u: _Doc(ok=False, wc=0, md=""))
     monkeypatch.setattr(dataextract.net, "get", lambda u, **k: _Resp("<html></html>"))
     monkeypatch.setattr(dataextract, "extract_structured", lambda *a, **k: None)

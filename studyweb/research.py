@@ -104,20 +104,45 @@ def research(query: str, *, max_results: int | None = None,
     }
 
 
+def _ok_item(d, *, include_raw_content: bool, recovered_from: str | None = None) -> dict:
+    item = {"url": d.url, "title": d.title, "content": d.markdown or d.text}
+    if include_raw_content:
+        item["raw_content"] = d.text
+    if recovered_from:
+        item["recovered_from"] = recovered_from
+        item["note"] = ("요청한 URL을 열 수 없어(404/오류) 같은 사이트에서 실제 페이지를 "
+                        "찾아 대신 열었습니다. 원하는 페이지가 아니면 다시 검색하세요.")
+    return item
+
+
 def extract_urls(urls: list[str], *, include_raw_content: bool = True) -> dict:
-    """Tavily /extract-compatible: fetch URLs and return clean content."""
+    """Tavily /extract-compatible: fetch URLs and return clean content.
+
+    When a URL fails (commonly a hallucinated/404 link) and recovery is enabled,
+    search the same site for the intended page and return that instead — so a
+    wrong URL still resolves to real content rather than a bare error."""
     t0 = time.time()
     docs = fetch_many(urls)
     ok, failed = [], []
     for d in docs:
         if d.ok:
-            item = {"url": d.url, "title": d.title,
-                    "content": d.markdown or d.text}
-            if include_raw_content:
-                item["raw_content"] = d.text
-            ok.append(item)
-        else:
-            failed.append({"url": d.url, "error": d.error or f"status {d.status}"})
+            ok.append(_ok_item(d, include_raw_content=include_raw_content))
+            continue
+        # --- recovery for a failed URL ---
+        if settings.recover_urls:
+            from .recover import open_best
+            rdoc, real_url, cands = open_best(
+                d.url, max_candidates=settings.recover_max_candidates)
+            if rdoc is not None and rdoc.ok:
+                ok.append(_ok_item(rdoc, include_raw_content=include_raw_content,
+                                   recovered_from=d.url))
+                continue
+            if cands:
+                failed.append({"url": d.url, "error": d.error or f"status {d.status}",
+                               "suggestions": [{"title": c.title, "url": c.url} for c in cands],
+                               "note": "위 suggestions 중 하나로 다시 시도하세요."})
+                continue
+        failed.append({"url": d.url, "error": d.error or f"status {d.status}"})
     return {"results": ok, "failed_results": failed,
             "response_time": round(time.time() - t0, 3)}
 

@@ -73,6 +73,12 @@ class Settings:
     default_max_results: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_RESULTS", 6))
     passage_chars: int = field(default_factory=lambda: _env_int("STUDYWEB_PASSAGE_CHARS", 900))
 
+    # ---- URL recovery (for hallucinated / 404 URLs) -----------------------
+    # When open_url / extract_data get a URL that fails, search the same site for
+    # the intended page instead of returning a bare 404.
+    recover_urls: bool = field(default_factory=lambda: _env_bool("STUDYWEB_RECOVER_URLS", True))
+    recover_max_candidates: int = field(default_factory=lambda: _env_int("STUDYWEB_RECOVER_MAX", 5))
+
     # ---- Structured data extraction (general, cross-site) ------------------
     # Local OpenAI-compatible LLM used for schema-guided extraction when a page
     # has no structured markup (JSON-LD/microdata). Defaults to LM Studio.

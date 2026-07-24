@@ -184,9 +184,39 @@ def dispatch_tool(name: str, arguments: dict, *, budget_chars: int = 2400) -> di
         if name == "open_url":
             url = _req_str(args, "url")
             d = fetch_page(url)
-            if not d.ok:
-                return {"url": url, "error": d.error or f"status {d.status}"}
-            return {"url": d.url, "title": d.title, "content": _truncate(d.markdown or d.text, 3500)}
+            if d.ok:
+                return {"url": d.url, "title": d.title,
+                        "content": _truncate(d.markdown or d.text, 3500)}
+            # The URL failed (often a hallucinated/404 link). Try to recover the
+            # intended page by searching the same site before giving up.
+            from .config import settings
+            if settings.recover_urls:
+                from .recover import open_best
+                doc, real_url, cands = open_best(
+                    url, max_candidates=settings.recover_max_candidates)
+                if doc is not None and doc.ok:
+                    alts = [{"title": c.title, "url": c.url}
+                            for c in cands if c.url != doc.url][:4]
+                    return {
+                        "url": doc.url, "title": doc.title,
+                        "content": _truncate(doc.markdown or doc.text, 3500),
+                        "recovered_from": url,
+                        "note": (f"요청한 URL '{url}' 을(를) 열 수 없어(404/오류) 같은 사이트에서 "
+                                 "가장 근접한 실제 페이지를 대신 열었습니다. 원하는 페이지가 아니면 "
+                                 "alternatives 중 하나를 open_url 로 다시 시도하세요."),
+                        "alternatives": alts,
+                    }
+                if cands:
+                    return {
+                        "error": f"요청한 URL '{url}' 을(를) 찾을 수 없습니다(404/오류).",
+                        "suggestions": [{"title": c.title, "url": c.url} for c in cands],
+                        "note": "위 suggestions 중 하나를 open_url 로 다시 시도하세요.",
+                    }
+            return {
+                "url": url, "error": d.error or f"status {d.status}",
+                "note": ("URL을 찾지 못했습니다(404/오류). 추측한 URL 대신 web_search "
+                         "또는 site_search 로 올바른 링크를 먼저 찾은 뒤 그 URL을 open_url 하세요."),
+            }
         if name == "collect_rag":
             rag = _build_rag(query=_req_str(args, "query"),
                              max_results=_opt_int(args, "max_results", 4))
@@ -205,9 +235,14 @@ def dispatch_tool(name: str, arguments: dict, *, budget_chars: int = 2400) -> di
                 render_mode = "auto"
             res = _extract_data(_req_str(args, "url"), schema=fields or None,
                                 render_mode=render_mode)
-            return {"url": res["url"], "method": res["method"],
-                    "rendered": res["rendered"], "data": res["data"],
-                    "warnings": res["warnings"]}
+            out = {"url": res["url"], "method": res["method"],
+                   "rendered": res["rendered"], "data": res["data"],
+                   "warnings": res["warnings"]}
+            if res.get("recovered_from"):
+                out["recovered_from"] = res["recovered_from"]
+                out["note"] = ("요청한 URL을 열 수 없어 같은 사이트에서 실제 페이지를 찾아 "
+                               "대신 추출했습니다. url 필드가 실제로 사용된 페이지입니다.")
+            return out
         return {"error": f"unknown tool: {name}"}
     except ValueError as exc:
         return {"error": str(exc)}
