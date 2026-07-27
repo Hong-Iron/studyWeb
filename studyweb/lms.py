@@ -208,11 +208,13 @@ def dispatch_tool(name: str, arguments: dict, *, budget_chars: int = 2400) -> di
             out = find_prices(_req_str(args, "query"), sites=args.get("sites"),
                               per_site=_opt_int(args, "per_site", 3))
             # Trim to what a model needs to answer and cite: the number, the
-            # name, the source. Snippets and brands only pad the context.
+            # name, the source, and how the number was read. Snippets and brands
+            # only pad the context.
             return {
                 "query": out["query"], "summary": out["summary"],
                 "quotes": [{"site": q["site"], "price": q["price"], "title": q["title"],
-                            "url": q["url"]} for q in out["quotes"][:12]],
+                            "url": q["url"], "method": q["method"]}
+                           for q in out["quotes"][:12]],
                 "misses": out["misses"],
             }
         if name == "site_search":

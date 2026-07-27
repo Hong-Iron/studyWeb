@@ -23,6 +23,14 @@ def test_build_search_url_encodes_amazon():
     assert url == "https://www.amazon.com/s?k=usb+c+cable"
 
 
+def test_compuzone_search_goes_to_the_server_rendered_list():
+    # /search/search.htm is a JS shell — going there returns a page with no
+    # products on it, which used to look like "the site has nothing".
+    url = build_search_url("compuzone.co.kr", "9600X")
+    assert url.startswith("https://www.compuzone.co.kr/search/search_list.php?")
+    assert "SearchText=9600X" in url
+
+
 def test_canon_dedups_same_product_variants():
     # The plain link and two review/opinion deep-links are the same product.
     a = _canon("https://prod.danawa.com/info/?pcode=96985325&keyword=abc&cate=122577")
@@ -40,12 +48,41 @@ def test_discover_template_from_form(monkeypatch):
         <input type="text" name="search_query" />
       </form></body></html>"""
     class R:  # minimal net.Response stand-in
-        text = html
+        content = html.encode("utf-8")
+        declared_encoding = "utf-8"
     monkeypatch.setattr(ss.net, "get", lambda url, **k: R())
     ss._discovered.clear()
     tmpl = ss._discover_template("example.com")
     assert tmpl == "https://example.com/results?search_query={q}"
     assert build_search_url("example.com", "hi") == "https://example.com/results?search_query=hi"
+
+
+def _discover(monkeypatch, html):
+    class R:
+        content = html.encode("utf-8")
+        declared_encoding = "utf-8"
+    monkeypatch.setattr(ss.net, "get", lambda url, **k: R())
+    ss._discovered.clear()
+    return ss._discover_template("shop.example")
+
+
+def test_discovery_skips_the_login_form_for_the_search_one(monkeypatch):
+    # A shop's homepage leads with login and newsletter forms. Taking the first
+    # form with a text input builds a template that quietly returns nothing.
+    tmpl = _discover(monkeypatch, """<html><body>
+      <form action="/member/login" method="post">
+        <input type="text" name="mb_id"><input type="password" name="mb_pw"></form>
+      <form action="/newsletter" method="post"><input type="text" name="email"></form>
+      <form name="search_form" action="/usr/search/search_list.php" method="get">
+        <input type="text" id="search_inp" name="stx"></form>
+    </body></html>""")
+    assert tmpl == "https://shop.example/usr/search/search_list.php?stx={q}"
+
+
+def test_discovery_declines_when_no_form_looks_like_search(monkeypatch):
+    assert _discover(monkeypatch, """<html><body>
+      <form action="/login" method="post"><input type="text" name="userid"></form>
+    </body></html>""") is None
 
 
 def test_site_search_harvests_and_dedupes(monkeypatch):

@@ -3,12 +3,14 @@
 This is deliberately *not* a search-engine query with `site:` operators — Bing
 and DuckDuckGo return almost nothing for `(site:a OR site:b OR …)`, and what
 they do return is a snippet, not a price. Instead each site's own search page is
-crawled directly (:mod:`studyweb.sitesearch`), and the price is read off the
-product page's structured markup (:mod:`studyweb.structured`), falling back to
-the price the search result already displayed.
+crawled directly (:mod:`studyweb.sitesearch`) and the price is read off the
+product page — from its structured markup (:mod:`studyweb.structured`) where
+there is any, from the rendered DOM under a price label where there is none,
+and from the search-result row as a last resort.
 
 No API key. No LLM unless you ask for one — Korean shopping sites publish
-JSON-LD `Offer.price`, so the exact number is usually right there in the page.
+JSON-LD `Offer.price`, so the exact number is usually right there in the page;
+the ones that don't (Compuzone) still print it next to the word 판매가.
 
     >>> find_prices("AMD 라이젠5 9600X", sites=["danawa.com"])
     {'query': ..., 'quotes': [{'site': 'danawa.com', 'price': 265000, ...}], ...}
@@ -16,24 +18,22 @@ JSON-LD `Offer.price`, so the exact number is usually right there in the page.
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import statistics
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict, field
 
+from lxml import html as LH
+
 from . import net, sitesearch
-from .config import settings
+from .config import settings, DEFAULT_PRICE_SITES as DEFAULT_SITES
 from .structured import extract_structured
 
 log = logging.getLogger("studyweb.prices")
-
-# Korean price-comparison and marketplace sites, in the order a buyer would
-# actually check them. Override per call or with STUDYWEB_PRICE_SITES.
-DEFAULT_SITES: tuple[str, ...] = (
-    "danawa.com", "shopping.naver.com", "11st.co.kr", "coupang.com",
-)
 
 # A price in prose must carry its currency: "265,000원", "265000 KRW", "₩265,000".
 # A bare number never counts — "라이젠5 9600X" would otherwise sell for 9,600원,
@@ -52,7 +52,7 @@ class Quote:
     url: str
     price: int | None = None
     currency: str = "KRW"
-    method: str = ""          # json-ld | microdata | opengraph | listing | naver_api
+    method: str = ""          # json-ld | microdata | opengraph | dom | listing | naver_api
     brand: str = ""
     snippet: str = ""
 
@@ -87,32 +87,139 @@ def price_from_field(v) -> int | None:
     return _as_won(m.group(0)) if m else None
 
 
-def _price_of(url: str) -> tuple[int | None, str, str, str]:
-    """(price, method, name, brand) from a product page's structured markup."""
+# --------------------------------------------------------------------------- #
+#  Reading a price off the page itself                                         #
+# --------------------------------------------------------------------------- #
+# Plenty of shops publish no schema.org markup at all — Compuzone is one — so
+# the number has to come out of the rendered DOM. Two rules keep that honest.
+#
+# 1. Hidden nodes go first. Korean shops routinely plant a decoy: Compuzone
+#    ships `<div style="display:none">256,000</div>259,000<span>원</span>`, so a
+#    naive read returns the decoy, or glues the two into "256,000259,000".
+#    Dropping the node has to keep its *tail* — the real digits live there —
+#    which is exactly what lxml's drop_tree() does and remove() does not.
+# 2. A candidate must sit under a visible price label. Without that rule a promo
+#    banner ("래플 … 99% 100원") outranks the product the page is about.
+_HIDDEN = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0")
+# Best label first: 판매가 is unambiguous, a bare 가격 may be a spec-table header.
+_PRICE_LABELS = ("판매가", "최저가", "할인가", "판매 가격", "가격",
+                 "sale price", "our price", "price")
+# Beyond this a "container" is a page section, not a price box, and the amount
+# it holds is as likely to be a coupon or a shipping threshold as the price.
+_LABEL_CONTEXT = 120
+
+
+def _prune(doc):
+    """Drop the parts of a page that must not contribute a price."""
+    for el in doc.xpath("//script|//style|//noscript|//template|//del|//s|//strike"):
+        if el.getparent() is not None:
+            el.drop_tree()
+    for el in doc.xpath("//*[@style]"):
+        # getparent() is None once an enclosing hidden node took this one with it.
+        if _HIDDEN.search(el.get("style") or "") and el.getparent() is not None:
+            el.drop_tree()
+    return doc
+
+
+def price_from_dom(doc) -> int | None:
+    """The selling price shown on a product page, or None if it isn't labelled.
+
+    Returning None is the right answer far more often than guessing: a wrong
+    price is worse than a reported miss.
+    """
+    doc = _prune(copy.deepcopy(doc))
+    best: tuple[int, int, int] | None = None      # (label rank, distance, price)
+    for el in doc.iter():
+        label = re.sub(r"\s+", " ", (el.text or "")).strip().lower()
+        # A label is a short caption ("판매가"), never a sentence that mentions one.
+        if not label or len(label) > 24:
+            continue
+        rank = next((i for i, lab in enumerate(_PRICE_LABELS) if lab in label), None)
+        if rank is None:
+            continue
+        node = el
+        for distance in range(3):
+            node = node.getparent()
+            if node is None:
+                break
+            body = re.sub(r"\s+", " ", node.text_content()).strip()
+            if len(body) > _LABEL_CONTEXT:
+                break                      # climbed out of the price box
+            m = _WON.search(body)
+            if m:
+                price = _as_won(m.group(1) or m.group(2))
+                if price is not None and (best is None or (rank, distance) < best[:2]):
+                    best = (rank, distance, price)
+                break
+    return best[2] if best else None
+
+
+def _page_name(doc) -> str:
+    """The product's name, for pages where a search listing only had spec text."""
+    for xp in ('//meta[@property="og:title"]/@content',
+               "//h1//text()", "//title/text()"):
+        for raw in doc.xpath(xp):
+            name = re.sub(r"\s+", " ", str(raw)).strip()
+            # Sites suffix their own name onto <title>/og:title ("… : 컴퓨존");
+            # the product is the part before it.
+            name = re.split(r"\s+[:|｜]\s+", name)[0].strip()
+            if name:
+                return name[:200]
+    return ""
+
+
+@dataclass
+class _Read:
+    """What one product page gave up. ``problem`` explains an empty price."""
+    price: int | None = None
+    method: str = ""
+    name: str = ""
+    brand: str = ""
+    problem: str = ""
+
+
+def _price_of(url: str) -> _Read:
+    """Read the price off one product page."""
     try:
         resp = net.get(url, use_cache=True)
     except Exception as exc:  # noqa: BLE001 — one dead product page is not fatal
         log.debug("price fetch failed for %s: %s", url, exc)
-        return None, "", "", ""
-    data = extract_structured(resp.content, url, resp.declared_encoding)
-    if not data:
-        return None, "", "", ""
-    return (price_from_field(data.get("price")),
-            str(data.get("source") or "structured"),
-            str(data.get("name") or ""), str(data.get("brand") or ""))
+        # net.FetchError puts the URL after the colon; the cause is the half
+        # worth repeating back ("blocked by robots.txt", "HTTP 403", …).
+        return _Read(problem=(str(exc).split(":", 1)[0] or type(exc).__name__)[:60])
+    try:
+        parser = LH.HTMLParser(encoding=resp.declared_encoding) if resp.declared_encoding else LH.HTMLParser()
+        doc = LH.fromstring(resp.content, parser=parser)
+    except Exception as exc:  # noqa: BLE001 — an unparseable page is a miss
+        log.debug("price parse failed for %s: %s", url, exc)
+        return _Read(problem="the page could not be parsed")
+
+    data = extract_structured(doc, url) or {}
+    price = price_from_field(data.get("price"))
+    method = str(data.get("source") or "") if price is not None else ""
+    if price is None:
+        price = price_from_dom(doc)
+        method = "dom" if price is not None else ""
+    return _Read(price=price, method=method,
+                 name=str(data.get("name") or "") or _page_name(doc),
+                 brand=str(data.get("brand") or ""),
+                 problem="" if price is not None else "no price in the page")
 
 
-def _quote(site: str, r) -> Quote:
+def _quote(site: str, r) -> tuple[Quote, str]:
     """Turn one search hit into a quote, preferring the product page's own
     structured price over the number the listing happened to render."""
-    price, method, name, brand = _price_of(r.url)
+    read = _price_of(r.url)
+    price, method, problem = read.price, read.method, read.problem
     if price is None:
         # Listing pages often show the price and nothing else useful; danawa's
         # result rows are literally "265,000원".
         price = price_from_text(r.title) or price_from_text(r.snippet)
-        method = "listing" if price is not None else ""
-    return Quote(site=site, title=(name or r.title).strip(), url=r.url,
-                 price=price, method=method, brand=brand, snippet=r.snippet)
+        if price is not None:
+            method, problem = "listing", ""
+    return Quote(site=site, title=(read.name or r.title).strip(), url=r.url,
+                 price=price, method=method, brand=read.brand,
+                 snippet=r.snippet), problem
 
 
 def _naver_quotes(query: str, n: int) -> list[Quote]:
@@ -144,10 +251,14 @@ def _site_quotes(site: str, query: str, per_site: int) -> tuple[list[Quote], str
 
     workers = min(len(results), settings.max_workers)
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        quotes = list(pool.map(lambda r: _quote(site, r), results))
-    priced = [q for q in quotes if q.price is not None]
+        read = list(pool.map(lambda r: _quote(site, r), results))
+    priced = [q for q, _ in read if q.price is not None]
     if not priced:
-        return [], f"{len(quotes)} page(s) found, none published a price"
+        # Say *why*. "none published a price" and "every page was blocked by
+        # robots.txt" call for completely different fixes.
+        why = Counter(p for _, p in read if p).most_common(1)
+        return [], f"{len(read)} page(s) found, none priced" + (
+            f" — {why[0][0]}" if why else "")
     return priced, ""
 
 

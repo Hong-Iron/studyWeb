@@ -70,16 +70,28 @@ Returns:
 {"query": "…",
  "summary": {"count": 2, "currency": "KRW", "min": 260710, "median": 262855,
              "max": 265000, "cheapest_url": "https://…", "by_site": {"danawa.com": 260710}},
- "quotes": [{"site": "danawa.com", "price": 260710, "title": "AMD 라이젠5-6세대 9600X (멀티팩 정품)", "url": "https://…"}],
- "misses": [{"site": "coupang.com", "reason": "no results — the site's search page returned nothing to a static fetch"}]}
+ "quotes": [{"site": "danawa.com", "price": 260710, "method": "json-ld",
+             "title": "AMD 라이젠5-6세대 9600X (멀티팩 정품)", "url": "https://…"}],
+ "misses": [{"site": "coupang.com", "reason": "no results — the site's search page returned nothing to a static fetch"},
+            {"site": "11st.co.kr", "reason": "3 page(s) found, none priced — blocked by robots.txt"}]}
 ```
 
 - `summary` is `null` when nothing could be priced. That means **no price was
   found** — it does not mean the item is free or unavailable. Say so and list
   the misses.
 - `quotes` is sorted cheapest first. Each price came from that seller's own page.
+  A quote's `method` says how it was read — `json-ld`/`microdata`/`opengraph`
+  come from the page's own product markup, `dom` was read off the rendered page
+  under its price label, `listing` came from the search-result row. All four are
+  the seller's own number; none of them is a guess.
+- `quotes` follows each site's ranking, so a query for a part can bring back
+  whole machines that contain it. Check the titles before quoting `summary.max`
+  or `median` — `min` and `by_site` are the figures worth reporting.
 - `misses` lists sites that could not be read. **Always mention them** when you
-  report a minimum, because the real minimum may be on a site that failed.
+  report a minimum, because the real minimum may be on a site that failed. The
+  reason says which kind of failure it was, and they are not interchangeable:
+  "blocked by robots.txt" means studyweb declined to fetch the page, not that
+  the price is unavailable to a human.
 - Prices are what the site listed at that moment, before shipping and options.
   Report them as such; do not describe one as "the cheapest in Korea".
 - `sites` accepts any domains. Omit it to use the configured default list.
@@ -137,8 +149,9 @@ Change the approach, don't repeat the call.
 ```
 find_prices({"query": "AMD 라이젠5 9600X"})
 ```
-→ 260,710원 ~ 265,000원 (다나와 기준, 2건). 최저가는 멀티팩 정품 260,710원입니다.
-쿠팡·11번가는 조회에 실패해 제외했습니다. 출처: https://prod.danawa.com/info/?pcode=62794079
+→ 252,000원 ~ 260,720원 (에누리·컴퓨존·다나와). 최저가는 에누리 멀티팩 정품 252,000원입니다.
+네이버쇼핑·쿠팡은 조회에 실패했고, 11번가는 robots.txt로 막혀 있어 제외했습니다.
+출처: https://www.enuri.com/detail.jsp?modelno=127363413
 
 Not this: `web_search({"query": "라이젠 9600X 가격 (site:danawa.com OR site:coupang.com)"})`
 — that returns nothing usable, and any number you write from it is a guess.
