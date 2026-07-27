@@ -81,6 +81,13 @@ class Settings:
         p.strip().lower() for p in os.environ.get("STUDYWEB_SEARCH_DISABLE", "").split(",")
         if p.strip()))
 
+    # Sites checked by `studyweb prices` / POST /prices, in buyer order.
+    price_sites: tuple = field(default_factory=lambda: tuple(
+        s.strip() for s in os.environ.get(
+            "STUDYWEB_PRICE_SITES",
+            "danawa.com,shopping.naver.com,11st.co.kr,coupang.com").split(",")
+        if s.strip()))
+
     # ---- Research pipeline defaults ---------------------------------------
     default_max_results: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_RESULTS", 6))
     passage_chars: int = field(default_factory=lambda: _env_int("STUDYWEB_PASSAGE_CHARS", 900))

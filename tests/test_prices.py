@@ -1,0 +1,134 @@
+"""Multi-site price lookup. All offline — site search and page fetches are
+monkeypatched, so the fixtures below are the only 'web' involved."""
+
+import pytest
+
+from studyweb import prices
+from studyweb.config import settings
+from studyweb.search import SearchResult
+
+JSONLD = """<html><head><script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Product",
+ "name":"AMD 라이젠5-6세대 9600X (벌크 정품)","brand":{"name":"AMD"},
+ "offers":{"@type":"Offer","price":"265000","priceCurrency":"KRW"}}
+</script></head><body>본문</body></html>"""
+
+BARE = "<html><body><p>가격 정보 없음</p></body></html>"
+
+
+class _Resp:
+    def __init__(self, html):
+        self.content = html.encode("utf-8")
+        self.declared_encoding = "utf-8"
+        self.text = html
+
+
+def _wire(monkeypatch, hits: dict, pages: dict):
+    """hits: {site: [SearchResult, …]}   pages: {url: html}"""
+    def site_search(site, query, *, max_results=6, market=None):
+        return hits.get(site, [])[:max_results]
+
+    def get(url, **kw):
+        if url not in pages:
+            raise RuntimeError("404")
+        return _Resp(pages[url])
+
+    monkeypatch.setattr(prices.sitesearch, "site_search", site_search)
+    monkeypatch.setattr(prices.net, "get", get)
+
+
+# --- the parser -------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("265,000원", 265000),
+    ("리뷰 1,234건 · 265,000원", 265000),     # the review count must not win
+    ("₩265,000", 265000),
+    ("9600X 최저가 260,710원", 260710),
+    ("AMD 라이젠5 9600X", None),               # a model number is not a price
+    ("별점 4.7 리뷰수(41)", None),
+    ("", None),
+])
+def test_a_price_needs_its_currency(text, expected):
+    assert prices.price_from_text(text) == expected
+
+
+def test_structured_price_fields_stand_without_a_currency_marker():
+    # JSON-LD already said "this is the price", so bare digits are fine there.
+    assert prices.price_from_field("265000") == 265000
+    assert prices.price_from_field(260710.0) == 260710
+    assert prices.price_from_field("") is None
+
+
+# --- the pipeline -----------------------------------------------------------
+
+def test_price_comes_from_the_product_page_not_the_listing(monkeypatch):
+    _wire(monkeypatch,
+          hits={"danawa.com": [SearchResult("리뷰수(41)", "https://d/1")]},
+          pages={"https://d/1": JSONLD})
+    out = prices.find_prices("9600X", sites=["danawa.com"])
+    [q] = out["quotes"]
+    assert q["price"] == 265000 and q["method"] == "json-ld"
+    # the listing's link text was junk; the page's own name replaces it
+    assert q["title"].startswith("AMD 라이젠5")
+    assert out["summary"]["min"] == 265000
+
+
+def test_listing_price_is_the_fallback_when_a_page_has_no_markup(monkeypatch):
+    _wire(monkeypatch,
+          hits={"danawa.com": [SearchResult("265,000원", "https://d/2")]},
+          pages={"https://d/2": BARE})
+    [q] = prices.find_prices("9600X", sites=["danawa.com"])["quotes"]
+    assert q["price"] == 265000 and q["method"] == "listing"
+
+
+def test_a_site_that_yields_nothing_is_reported_not_silently_dropped(monkeypatch):
+    _wire(monkeypatch,
+          hits={"danawa.com": [SearchResult("x", "https://d/1")], "coupang.com": []},
+          pages={"https://d/1": JSONLD})
+    out = prices.find_prices("9600X", sites=["danawa.com", "coupang.com"])
+    assert len(out["quotes"]) == 1
+    assert [m["site"] for m in out["misses"]] == ["coupang.com"]
+
+
+def test_pages_without_a_price_are_a_miss_with_a_reason(monkeypatch):
+    _wire(monkeypatch,
+          hits={"11st.co.kr": [SearchResult("라이젠5 9600X", "https://e/1")]},
+          pages={"https://e/1": BARE})
+    out = prices.find_prices("9600X", sites=["11st.co.kr"])
+    assert out["quotes"] == [] and out["summary"] is None
+    assert "none published a price" in out["misses"][0]["reason"]
+
+
+def test_summary_ranks_by_price_and_keeps_the_cheapest_per_site(monkeypatch):
+    _wire(monkeypatch, hits={
+        "danawa.com": [SearchResult("a", "https://d/hi"), SearchResult("b", "https://d/lo")],
+        "11st.co.kr": [SearchResult("c", "https://e/mid")],
+    }, pages={
+        "https://d/hi": JSONLD.replace("265000", "300000"),
+        "https://d/lo": JSONLD.replace("265000", "200000"),
+        "https://e/mid": JSONLD.replace("265000", "250000"),
+    })
+    out = prices.find_prices("9600X", sites=["danawa.com", "11st.co.kr"])
+    assert [q["price"] for q in out["quotes"]] == [200000, 250000, 300000]
+    s = out["summary"]
+    assert (s["min"], s["median"], s["max"]) == (200000, 250000, 300000)
+    assert s["by_site"] == {"danawa.com": 200000, "11st.co.kr": 250000}
+    assert s["cheapest_url"] == "https://d/lo"
+
+
+def test_naver_keys_swap_crawling_for_the_api(monkeypatch):
+    """Naver publishes prices over an API, so crawling its JS shell is pointless
+    when the keys are there."""
+    from studyweb.search import PROVIDERS
+    monkeypatch.setattr(settings, "naver_client_id", "id")
+    monkeypatch.setattr(settings, "naver_client_secret", "secret")
+    monkeypatch.setitem(PROVIDERS, "naver_shop", lambda q, n: [
+        SearchResult("AMD 9600X", "https://shop/1", source="naver_shop",
+                     extra={"price_low": 259000, "mall": "쿠팡", "brand": "AMD"})])
+
+    def boom(*a, **k):
+        raise AssertionError("must not crawl when the API is available")
+    monkeypatch.setattr(prices.sitesearch, "site_search", boom)
+
+    [q] = prices.find_prices("9600X", sites=["shopping.naver.com"])["quotes"]
+    assert q["price"] == 259000 and q["method"] == "naver_api" and q["snippet"] == "쿠팡"

@@ -178,6 +178,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/search":
                 return self._run_search(body)
+            if path == "/prices":
+                q = body.get("query")
+                if not q or not str(q).strip():
+                    raise BadRequest("'query' is required")
+                sites = body.get("sites")
+                if sites is not None and not isinstance(sites, list):
+                    raise BadRequest("'sites' must be an array of domains")
+                from .prices import find_prices
+                with _pipeline_gate:
+                    return self._send(200, find_prices(
+                        str(q), sites=sites,
+                        per_site=_as_int(body, "per_site", 3, lo=1, hi=10)))
             if path == "/extract":
                 urls = body.get("urls")
                 if not isinstance(urls, list) or not urls:
@@ -314,7 +326,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"studyweb API on http://{host}:{port}\n"
-          f"  web    POST /search /extract /extract-data /rag  ·  GET /health /tool-schema\n"
+          f"  web    POST /search /extract /extract-data /prices /rag  ·  GET /health /tool-schema\n"
           f"  models POST /chat /agent /usage/reset  ·  GET /providers /models /usage /pricing")
     if settings.api_key:
         print("  auth: STUDYWEB_API_KEY required")

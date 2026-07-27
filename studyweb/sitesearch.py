@@ -23,6 +23,7 @@ from urllib.parse import (urlsplit, urlunsplit, urlencode, quote_plus,
 from lxml import html as LH
 
 from . import net
+from .config import settings
 from .fetch import fetch_page
 from .search import SearchResult
 
@@ -180,10 +181,25 @@ def site_search(site: str, query: str, *, max_results: int = 6,
 
     pattern = _result_pattern(site_norm)
     page = fetch_page(url)
-    if not page.ok:
-        return []
+    results = _harvest(page, site_norm, pattern, _canon(url), max_results) if page.ok else []
 
-    search_key = _canon(url)
+    # Marketplaces (11st, Coupang, Naver shopping) serve a JS shell to a static
+    # fetch — the listing only exists after scripts run. Render once if a browser
+    # is available; without one the caller gets an honest empty list.
+    if not results and settings.render_enabled:
+        from . import render
+        if render.available():
+            html_str = render.render_html(url)
+            if html_str:
+                from .dataextract import _rendered_document
+                results = _harvest(_rendered_document(url, html_str), site_norm,
+                                   pattern, _canon(url), max_results)
+    return results
+
+
+def _harvest(page, site_norm: str, pattern, search_key: str,
+             max_results: int) -> list[SearchResult]:
+    """Pick on-site result links out of a fetched (or rendered) search page."""
     best_title: dict[str, str] = {}
     order: list[tuple[str, str]] = []
     for link in page.links:

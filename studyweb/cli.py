@@ -42,6 +42,29 @@ def cmd_search(a) -> int:
     return 0
 
 
+def cmd_prices(a) -> int:
+    from .prices import find_prices
+    sites = [s for s in (a.sites or "").split(",") if s.strip()] or None
+    out = find_prices(a.query, sites=sites, per_site=a.per_site)
+    if a.json:
+        _print_json(out)
+        return 0
+
+    for q in out["quotes"]:
+        price = f"{q['price']:,}원" if q["price"] is not None else "가격 없음"
+        print(f"{price:>14}  {q['site']:<22} {q['title'][:52]}")
+        print(f"{'':>14}  {q['url']}")
+    s = out["summary"]
+    if s:
+        print(f"\n{s['count']}건 · 최저 {s['min']:,}원 · 중앙값 {s['median']:,}원 "
+              f"· 최고 {s['max']:,}원  ({out['response_time']}s)")
+    else:
+        print("가격을 찾지 못했습니다.", file=sys.stderr)
+    for m in out["misses"]:
+        print(f"  - {m['site']}: {m['reason']}", file=sys.stderr)
+    return 0 if s else 1
+
+
 def cmd_fetch(a) -> int:
     d = fetch_page(a.url)
     if not d.ok:
@@ -222,6 +245,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--site", default=None, help="search within one site directly (no Bing), e.g. danawa.com")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_search)
+
+    pr = sub.add_parser("prices", help="find a price across a fixed list of sites")
+    pr.add_argument("query")
+    pr.add_argument("--sites", default=None,
+                    help=f"comma-separated domains (default: {','.join(settings.price_sites)})")
+    pr.add_argument("--per-site", type=int, default=3, dest="per_site")
+    pr.add_argument("--json", action="store_true")
+    pr.set_defaults(func=cmd_prices)
 
     f = sub.add_parser("fetch", help="fetch & clean one page")
     f.add_argument("url"); f.add_argument("--text", action="store_true")

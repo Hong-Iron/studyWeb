@@ -95,6 +95,7 @@ curl -X POST http://localhost:8787/search -H 'Content-Type: application/json' -d
 | `POST /search`     | Tavily-shaped: `{query, answer, results:[{title,url,content,score}], ...}` |
 | `POST /extract`    | `{urls:[...]}` → cleaned content per URL (Tavily `/extract` shape) |
 | `POST /rag`        | `{query|urls, crawl_depth, chunk_size, ...}` → RAG-ready chunks |
+| `POST /prices`     | `{query, sites?, per_site?}` → `{quotes, summary, misses}` price comparison |
 | `GET  /search?q=`  | Convenience GET form of search                                 |
 | `GET  /health`     | Status + (secret-masked) config                                |
 | `GET  /tool-schema`| The OpenAI/LM-Studio tool definitions                          |
@@ -286,6 +287,46 @@ twice over when the domain-scoped recall retry fires:
 ```bash
 STUDYWEB_SEARCH_DISABLE=duckduckgo      # comma-separated provider ids
 ```
+
+## Finding a price across a fixed list of sites
+
+The thing a search engine is worst at. `(site:danawa.com OR site:coupang.com OR …)`
+returns almost nothing, and what it returns is a snippet, not a price. So this
+doesn't use a search engine at all:
+
+```bash
+studyweb prices "AMD 라이젠5 9600X" --per-site 2
+```
+```
+      260,710원  danawa.com   AMD 라이젠5-6세대 9600X (그래니트 릿지) (멀티팩 정품)
+                 https://prod.danawa.com/info/?pcode=62794079
+      265,000원  danawa.com   AMD 라이젠5-6세대 9600X (그래니트 릿지) (벌크 정품)
+                 https://prod.danawa.com/info/?pcode=99286724
+
+2건 · 최저 260,710원 · 중앙값 262,855원 · 최고 265,000원  (2.7s)
+  - 11st.co.kr: 2 page(s) found, none published a price
+  - coupang.com: no results — the site's search page returned nothing to a static fetch
+```
+
+Each site's **own** search page is crawled, then the price is read off the
+product page's structured markup (`Offer.price` in JSON-LD, microdata,
+OpenGraph). No API key, no LLM, ~3 seconds. `POST /prices` returns the same as
+JSON, and `STUDYWEB_PRICE_SITES` sets the default site list.
+
+Two rules it sticks to:
+
+- **A price in prose must carry its currency.** `265,000원` is a price;
+  the `9600X` in a product name is not, and neither is a review count.
+- **A site that yields nothing is reported, never silently dropped.** Every
+  entry in `misses` says which site and why, so an empty answer can't be
+  mistaken for a cheap one.
+
+Sites that render their listings in JavaScript (Coupang, 11st, Naver shopping)
+return nothing to a static fetch. Two ways out: install Chrome and leave
+`STUDYWEB_RENDER=true`, which retries the listing in a headless browser; or set
+the Naver API keys, after which `shopping.naver.com` is answered by the API
+instead of a crawl — exact prices for the marketplaces it aggregates, no
+fetching at all.
 
 ### Fully-local site search (no search engine at all)
 
