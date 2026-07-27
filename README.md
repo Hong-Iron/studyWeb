@@ -66,6 +66,11 @@ python -m studyweb fetch https://en.wikipedia.org/wiki/CRISPR --markdown
 python -m studyweb answer "what causes inflation"          # Tavily-style answer
 python -m studyweb rag  "photosynthesis" --crawl-depth 1 --out ./data
 python -m studyweb serve --port 8787                       # HTTP API
+
+python -m studyweb providers                # who's connected right now
+python -m studyweb ask "GPU prices" --provider anthropic   # model + web tools
+python -m studyweb usage                    # tokens and cost so far
+python -m studyweb pricing --write          # export prices to edit
 ```
 
 ### 3. HTTP API (the Tavily-replacement server)
@@ -93,9 +98,20 @@ curl -X POST http://localhost:8787/search -H 'Content-Type: application/json' -d
 | `GET  /search?q=`  | Convenience GET form of search                                 |
 | `GET  /health`     | Status + (secret-masked) config                                |
 | `GET  /tool-schema`| The OpenAI/LM-Studio tool definitions                          |
+| `GET  /providers`  | Model providers; `?probe=1` dials each one for live status      |
+| `GET  /models`     | `?provider=openai` → the model ids it offers                    |
+| `POST /chat`       | One model turn on any provider → `{message, usage, provider, model}` |
+| `POST /agent`      | `{query}` → full tool-calling loop → `{final, trace, usage}`    |
+| `GET  /usage`      | Token/cost totals: session, today, last N days, all time        |
+| `POST /usage/reset`| `{scope: "session"\|"all"}`                                     |
+| `GET  /pricing`    | The effective per-model price table                            |
 
 Set `STUDYWEB_API_KEY` to require auth (via `{"api_key": ...}` or
-`Authorization: Bearer ...`).
+`Authorization: Bearer ...`). A provider failure comes back with a status you
+can act on — `428` needs a key or a model, `401` means the key was rejected,
+`429` rate-limited, `502` unreachable — plus a `kind` field, instead of a
+generic 500. `POST /chat` lets a client use cloud models without holding any
+keys of its own: they stay in the server's environment.
 
 ### 4. LLM tool integration (LM Studio / OpenAI-compatible)
 
@@ -115,6 +131,65 @@ print(out["final"])
 the results are fed back until the model produces its answer. You can also grab
 the raw schemas with `from studyweb.lms import TOOL_SCHEMAS, dispatch_tool` and
 wire them into any OpenAI-style client yourself.
+
+### 5. Cloud models (OpenAI · Claude · NVIDIA NIM · Claude Code)
+
+Local stays the default, but the same loop runs against a hosted model when you
+want more capability — `studyweb.providers` normalises them all to the OpenAI
+message shape, so nothing else changes:
+
+```python
+from studyweb.agent import run_agent
+
+out = run_agent("Compare RTX 5080 prices on danawa", provider="anthropic")
+print(out["final"])
+print(out["usage"])   # tokens, cost in USD, latency, number of calls
+```
+
+| Provider id   | What it is                     | Key                        |
+|---------------|--------------------------------|----------------------------|
+| `lmstudio`    | Local LM Studio (default)      | none — free, private       |
+| `openai`      | OpenAI                         | `OPENAI_API_KEY`           |
+| `anthropic`   | Claude API                     | `ANTHROPIC_API_KEY`        |
+| `nvidia`      | NVIDIA NIM (hosted or your own container) | `NVIDIA_API_KEY`  |
+| `claude-code` | The local `claude` CLI you're already signed in to | none      |
+| `custom`      | Any OpenAI-compatible server (Ollama, vLLM, OpenRouter, Groq…) | optional |
+
+Pick a default with `STUDYWEB_PROVIDER_LLM=anthropic`, a model with
+`ANTHROPIC_MODEL=claude-sonnet-5`, and an endpoint with `NVIDIA_BASE_URL=...`
+(handy for a self-hosted NIM). The structured-data extractor uses the same
+layer, so `extract_data(url, llm_provider="openai")` works too.
+
+Claude models that removed sampling parameters are handled for you — studyweb
+omits `temperature` for them instead of tripping a 400 — and the Claude Code
+provider brings its own tools, so studyweb's web tools aren't attached to it.
+
+### 6. Connection status and usage
+
+```console
+$ studyweb providers
+   PROVIDER       STATUS         MODEL                    DETAIL
+*✓ lmstudio       ok             gemma-4-12b-it           Connected · 6 model(s) available (6ms)
+ 🔑 openai         no_key         gpt-4o-mini              Set OPENAI_API_KEY to enable.
+ 🔑 anthropic      no_key         claude-opus-5            Set ANTHROPIC_API_KEY to enable.
+ ✓ claude-code    ok             (CLI default)            2.1.220 (Claude Code) (111ms)
+ ✗ custom         unreachable    —                        cannot reach … Connection refused
+
+$ studyweb usage
+SESSION      2 calls      1,000,015 tokens  (1,000,010 in / 5 out)  $5.0000 (+1 unpriced)
+TODAY        2 calls      1,000,015 tokens  …
+TOTAL       17 calls      3,204,881 tokens  …
+```
+
+Every call is priced and recorded — per session, per day, and all time — under
+`~/.local/share/studyweb`. Statuses are `ok`, `no_key`, `no_model`,
+`unauthorized`, `rate_limit`, `unreachable`, `not_installed`, `error`, so a
+failure tells you what to fix rather than just that it broke.
+
+Prices live in a table you can correct (`studyweb pricing --write` dumps it to
+`~/.config/studyweb/pricing.json`); a model with no entry reports tokens with no
+cost rather than inventing a figure. Turn recording off with
+`STUDYWEB_USAGE_PERSIST=0`.
 
 ### GUI plugins (built on this backend)
 

@@ -80,11 +80,49 @@ class Settings:
     recover_max_candidates: int = field(default_factory=lambda: _env_int("STUDYWEB_RECOVER_MAX", 5))
 
     # ---- Structured data extraction (general, cross-site) ------------------
-    # Local OpenAI-compatible LLM used for schema-guided extraction when a page
-    # has no structured markup (JSON-LD/microdata). Defaults to LM Studio.
+    # LLM used for schema-guided extraction when a page has no structured
+    # markup (JSON-LD/microdata). Defaults to a local LM Studio server.
     llm_base_url: str = field(default_factory=lambda: os.environ.get("STUDYWEB_LLM_BASE", "http://localhost:1234/v1"))
     llm_model: str = field(default_factory=lambda: os.environ.get("STUDYWEB_LLM_MODEL", ""))
     llm_timeout: float = field(default_factory=lambda: _env_float("STUDYWEB_LLM_TIMEOUT", 120.0))
+
+    # ---- Model providers (local + cloud) -----------------------------------
+    # Which provider studyweb talks to by default. See studyweb.providers for
+    # the registry: lmstudio | openai | anthropic | nvidia | claude-code | custom.
+    llm_provider: str = field(default_factory=lambda: os.environ.get("STUDYWEB_PROVIDER_LLM", "lmstudio"))
+    llm_temperature: float = field(default_factory=lambda: _env_float("STUDYWEB_LLM_TEMPERATURE", 0.0))
+    # Upper bound on a reply. Required by the Anthropic API, optional elsewhere.
+    # Claude counts thinking against this budget, so leave real headroom.
+    llm_max_tokens: int = field(default_factory=lambda: _env_int("STUDYWEB_LLM_MAX_TOKENS", 8192))
+    # Reasoning effort for providers that expose it (Claude: low|medium|high|
+    # xhigh|max). Empty = don't send it, which is what older models need.
+    llm_effort: str = field(default_factory=lambda: os.environ.get("STUDYWEB_LLM_EFFORT", ""))
+    # Per-provider overrides, keyed by provider id. Keys come from each
+    # provider's own env var (OPENAI_API_KEY, ANTHROPIC_API_KEY, NVIDIA_API_KEY…)
+    # unless something sets them here — the HTTP API does, for clients that
+    # would rather not keep keys of their own.
+    provider_keys: dict = field(default_factory=dict)
+    provider_base_urls: dict = field(default_factory=dict)
+    provider_models: dict = field(default_factory=dict)
+    # The Claude Code binary used by the "claude-code" provider.
+    claude_code_binary: str = field(default_factory=lambda: os.environ.get("STUDYWEB_CLAUDE_BIN", "claude"))
+
+    def __post_init__(self) -> None:
+        # STUDYWEB_LLM_BASE / STUDYWEB_LLM_MODEL predate the provider registry
+        # and mean "the local OpenAI-compatible server" — keep honouring them.
+        if os.environ.get("STUDYWEB_LLM_BASE"):
+            self.provider_base_urls.setdefault("lmstudio", self.llm_base_url)
+        if self.llm_model:
+            self.provider_models.setdefault("lmstudio", self.llm_model)
+        for pid, env in (("openai", "OPENAI_BASE_URL"), ("anthropic", "ANTHROPIC_BASE_URL"),
+                         ("nvidia", "NVIDIA_BASE_URL"), ("custom", "STUDYWEB_CUSTOM_BASE")):
+            if os.environ.get(env):
+                self.provider_base_urls.setdefault(pid, os.environ[env].rstrip("/"))
+        for pid, env in (("openai", "OPENAI_MODEL"), ("anthropic", "ANTHROPIC_MODEL"),
+                         ("nvidia", "NVIDIA_MODEL"), ("custom", "STUDYWEB_CUSTOM_MODEL"),
+                         ("claude-code", "CLAUDE_CODE_MODEL")):
+            if os.environ.get(env):
+                self.provider_models.setdefault(pid, os.environ[env])
 
     # ---- Headless browser fallback (for JS-rendered pages) ----------------
     # When a static fetch yields thin/JS-shell content, optionally re-fetch via
@@ -123,6 +161,7 @@ class Settings:
         for k in ("brave_api_key", "tavily_api_key", "serpapi_api_key",
                   "google_cse_key", "api_key"):
             d[k] = bool(d[k])  # report only presence
+        d["provider_keys"] = {k: bool(v) for k, v in d["provider_keys"].items()}
         return d
 
 

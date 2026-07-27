@@ -25,8 +25,11 @@ from .research import research, extract_urls, build_rag
 from .clean import clean, to_chunks, chunk_text
 from .structured import extract_structured
 from .dataextract import extract_data
+from .providers import PROVIDERS, chat, check, check_all, list_models, ProviderError
+from .agent import run_agent
+from .usage import Usage, ledger
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "search",
@@ -43,6 +46,15 @@ __all__ = [
     "build_rag",
     "extract_structured",
     "extract_data",
+    "PROVIDERS",
+    "chat",
+    "check",
+    "check_all",
+    "list_models",
+    "ProviderError",
+    "run_agent",
+    "Usage",
+    "ledger",
     "clean",
     "to_chunks",
     "chunk_text",

@@ -27,22 +27,11 @@ log = logging.getLogger("studyweb.dataextract")
 
 
 # --------------------------------------------------------------------------- #
-#  Local LLM (OpenAI-compatible) schema extraction                            #
+#  LLM schema extraction (local or cloud — see studyweb.providers)             #
 # --------------------------------------------------------------------------- #
 
 class LLMError(Exception):
     pass
-
-
-def _resolve_model(base_url: str, timeout: float) -> str:
-    if settings.llm_model:
-        return settings.llm_model
-    r = net.session().get(f"{base_url}/models", timeout=min(timeout, 15))
-    r.raise_for_status()
-    ids = [m["id"] for m in r.json().get("data", [])]
-    if not ids:
-        raise LLMError("no model loaded in the local LLM server")
-    return ids[0]
 
 
 def _extract_json(text: str) -> dict:
@@ -78,35 +67,33 @@ def _schema_desc(schema) -> str:
 
 def llm_extract(content: str, schema, *, model: str | None = None,
                 base_url: str | None = None, timeout: float | None = None,
-                max_chars: int = 12000) -> dict:
-    """Ask the local LLM to extract ``schema`` from ``content`` as JSON."""
-    base_url = (base_url or settings.llm_base_url).rstrip("/")
-    timeout = timeout or settings.llm_timeout
-    model = model or _resolve_model(base_url, timeout)
+                max_chars: int = 12000, provider: str | None = None,
+                usage_out: list | None = None) -> dict:
+    """Ask a model to extract ``schema`` from ``content`` as JSON.
+
+    Goes through :mod:`studyweb.providers`, so this works against the local LM
+    Studio server (the default) or any configured cloud provider. Append-only
+    ``usage_out`` collects what the call cost, for callers that report it.
+    """
+    from .providers import chat as _chat, ProviderError
     system = ("You extract structured data from web page text and return ONLY a "
               "JSON object. Use null for anything not present in the text. Never "
               "invent values. Keep prices exactly as written (including currency).")
     user = (f"Extract {_schema_desc(schema)}.\n\n"
             f"Return a JSON object with those fields.\n\n"
             f"--- PAGE CONTENT ---\n{content[:max_chars]}")
-    payload = {
-        "model": model,
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user}],
-        "temperature": 0,
-        "stream": False,
-        "response_format": {"type": "json_object"},
-    }
     try:
-        r = net.session().post(f"{base_url}/chat/completions", json=payload, timeout=timeout)
-        if r.status_code >= 400:  # some servers reject response_format; retry without
-            payload.pop("response_format", None)
-            r = net.session().post(f"{base_url}/chat/completions", json=payload, timeout=timeout)
-        r.raise_for_status()
-        reply = r.json()["choices"][0]["message"]["content"]
-    except Exception as exc:  # noqa: BLE001
-        raise LLMError(f"local LLM request failed: {exc}") from exc
-    return _extract_json(reply)
+        out = _chat([{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+                    provider=provider, model=model, temperature=0,
+                    timeout=timeout or settings.llm_timeout,
+                    json_mode=True, label="extract_data",
+                    endpoint=base_url)
+    except ProviderError as exc:
+        raise LLMError(f"LLM request failed: {exc}") from exc
+    if usage_out is not None:
+        usage_out.append(out["usage"].to_dict())
+    return _extract_json(out["message"].get("content") or "")
 
 
 # --------------------------------------------------------------------------- #
@@ -118,7 +105,7 @@ def _looks_thin(doc) -> bool:
 
 
 def extract_data(url: str, *, schema=None, render_mode: str = "auto",
-                 use_llm: bool = True) -> dict:
+                 use_llm: bool = True, llm_provider: str | None = None) -> dict:
     """Extract structured data from ``url`` across sites.
 
     ``schema``      list of field names / JSON schema / instruction. When given,
@@ -126,9 +113,11 @@ def extract_data(url: str, *, schema=None, render_mode: str = "auto",
                     product schema.
     ``render_mode`` "auto" (render only when static is thin / has no structured
                     data and a browser is available), "always", or "never".
-    ``use_llm``     allow the local-LLM fallback when structured markup is absent.
+    ``use_llm``     allow the LLM fallback when structured markup is absent.
+    ``llm_provider`` which model provider that fallback uses (defaults to
+                    ``settings.llm_provider`` — LM Studio unless configured).
 
-    Returns: {url, method, rendered, data, warnings}
+    Returns: {url, method, rendered, data, warnings, usage?}
     """
     schema = schema or ["name", "price", "currency", "brand", "description", "specs"]
     warnings: list[str] = []
@@ -196,11 +185,13 @@ def extract_data(url: str, *, schema=None, render_mode: str = "auto",
             return {"url": url, "method": "none", "rendered": rendered,
                     "recovered_from": recovered_from, "data": None,
                     "warnings": warnings}
+        used: list = []
         try:
-            extracted = llm_extract(content, schema)
+            extracted = llm_extract(content, schema, provider=llm_provider,
+                                    usage_out=used)
             return {"url": url, "method": "llm", "rendered": rendered,
                     "recovered_from": recovered_from, "data": extracted,
-                    "warnings": warnings}
+                    "warnings": warnings, "usage": used[0] if used else None}
         except LLMError as exc:
             warnings.append(str(exc))
 
