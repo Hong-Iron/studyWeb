@@ -1,0 +1,36 @@
+# A private SearXNG next to studyweb: a metasearch front-end over Google, Bing
+# and friends, with no API key and no quota. studyweb talks to it over
+# SEARXNG_URL and it is never exposed to the network.
+#
+#   cd deploy/searxng
+#   sed -i "s/REPLACE_ME/$(openssl rand -hex 32)/" settings.yml
+#   docker compose up -d
+#   curl -s 'http://127.0.0.1:8888/search?q=test&format=json' | head -c 200
+#
+# then point studyweb at it:
+#   SEARXNG_URL=http://127.0.0.1:8888
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    # Bound to loopback on purpose: only studyweb (same host) needs to reach it.
+    # An open SearXNG gets scraped and then rate-limited by upstream engines.
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"

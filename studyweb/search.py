@@ -7,6 +7,10 @@ No-key providers (work out of the box):
 
 Key-based providers (used automatically when the env key is present):
     * brave, tavily, serpapi, google_cse
+    * naver      — Korean web index (NAVER_CLIENT_ID / NAVER_CLIENT_SECRET)
+
+Vertical, never in the auto chain — ask for it by name:
+    * naver_shop — Korean shopping, returns real prices as numbers
 
 `provider="auto"` walks a sensible order and returns the first non-empty result
 set, so the tool always answers even if one backend is rate-limited.
@@ -17,7 +21,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from dataclasses import dataclass, asdict
+import re
+from dataclasses import dataclass, asdict, field
+from html import unescape
 from urllib.parse import urlsplit, parse_qs
 
 from lxml import html as LH
@@ -35,6 +41,9 @@ class SearchResult:
     snippet: str = ""
     source: str = ""          # which provider produced it
     score: float | None = None
+    # Structured payload from providers that return more than prose — e.g.
+    # naver_shop's prices. Empty for ordinary web results.
+    extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -251,6 +260,75 @@ def _google_cse(query: str, n: int) -> list[SearchResult]:
             for it in data.get("items", [])[:n]]
 
 
+# --- Naver -----------------------------------------------------------------
+# Korea's dominant index. Free tier is 25k calls/day, and the shopping vertical
+# hands back real prices as numbers — no scraping, no LLM extraction.
+
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def _naver_text(s: str | None) -> str:
+    """Naver wraps matched terms in <b>…</b> and HTML-escapes the rest."""
+    return unescape(_TAGS.sub("", s or "")).strip()
+
+
+def _won(v) -> int | None:
+    """Prices arrive as strings; "0" means 'not disclosed', not free."""
+    try:
+        n = int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+    return n or None
+
+
+def _naver_items(path: str, query: str, n: int) -> list[dict]:
+    if not (settings.naver_client_id and settings.naver_client_secret):
+        raise SearchError("NAVER_CLIENT_ID / NAVER_CLIENT_SECRET not set")
+    resp = net.session().get(
+        f"https://openapi.naver.com/v1/search/{path}",
+        params={"query": query, "display": max(1, min(n, 100))},
+        headers={"X-Naver-Client-Id": settings.naver_client_id,
+                 "X-Naver-Client-Secret": settings.naver_client_secret,
+                 "Accept": "application/json"},
+        timeout=settings.timeout)
+    _raise_for_status(resp, "naver")
+    return resp.json().get("items", [])[:n]
+
+
+def _naver(query: str, n: int) -> list[SearchResult]:
+    return [SearchResult(title=_naver_text(it.get("title")), url=it.get("link", ""),
+                         snippet=_naver_text(it.get("description")), source="naver")
+            for it in _naver_items("webkr.json", query, n)]
+
+
+def _naver_shop(query: str, n: int) -> list[SearchResult]:
+    """Shopping vertical: a price comparison without fetching a single page.
+
+    Kept out of the auto chain — these are product listings, not web results,
+    so they'd be a poor answer to a general question.
+    """
+    out = []
+    for it in _naver_items("shop.json", query, n):
+        lo, hi = _won(it.get("lprice")), _won(it.get("hprice"))
+        mall = _naver_text(it.get("mallName"))
+        bits = [f"{lo:,}원" if lo else "가격 미표시"]
+        if hi and hi != lo:
+            bits.append(f"~ {hi:,}원")
+        if mall:
+            bits.append(mall)
+        out.append(SearchResult(
+            title=_naver_text(it.get("title")), url=it.get("link", ""),
+            snippet=" · ".join(bits), source="naver_shop",
+            extra={"price_low": lo, "price_high": hi, "mall": mall,
+                   "product_id": it.get("productId", ""),
+                   "brand": _naver_text(it.get("brand")),
+                   "maker": _naver_text(it.get("maker")),
+                   "image": it.get("image", ""),
+                   "category": " > ".join(
+                       c for c in (_naver_text(it.get(f"category{i}")) for i in range(1, 5)) if c)}))
+    return out
+
+
 PROVIDERS = {
     "bing": _bing,
     "duckduckgo": _duckduckgo,
@@ -260,12 +338,19 @@ PROVIDERS = {
     "tavily": _tavily,
     "serpapi": _serpapi,
     "google_cse": _google_cse,
+    "naver": _naver,
+    "naver_shop": _naver_shop,
 }
 
 # Order tried under provider="auto": keyed providers first (higher quality when
 # configured), then the reliable no-key fallbacks.
 def _auto_order() -> list[str]:
     order = []
+    # Naver first when configured: setting those keys is an explicit statement
+    # that Korean-language results matter here. naver_shop stays out — it is a
+    # product vertical, not a web index.
+    if settings.naver_client_id and settings.naver_client_secret:
+        order.append("naver")
     if settings.brave_api_key:
         order.append("brave")
     if settings.serpapi_api_key:

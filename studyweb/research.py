@@ -47,6 +47,9 @@ def research(query: str, *, max_results: int | None = None,
             "title": r.title, "url": r.url,
             "content": r.snippet, "score": r.score or 0.0,
             "source": r.source,
+            # Providers that return structured data (naver_shop prices) must not
+            # lose it to the text-shaped Tavily contract.
+            **({"extra": r.extra} if r.extra else {}),
         } for r in results]
         answer = ""
         if include_answer:
@@ -80,6 +83,8 @@ def research(query: str, *, max_results: int | None = None,
                 raw = d.markdown or d.text
         item = {"title": (d.title if d and d.title else r.title), "url": r.url,
                 "content": content, "score": score, "source": r.source}
+        if r.extra:
+            item["extra"] = r.extra
         if include_raw_content:
             item["raw_content"] = raw
         out.append(item)

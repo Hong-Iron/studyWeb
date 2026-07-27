@@ -2,6 +2,7 @@
 All offline — providers/network are monkeypatched."""
 
 import base64
+import json
 
 import pytest
 
@@ -77,6 +78,80 @@ def test_decode_ddg_redirect_url():
 
 def test_blank_query_returns_empty():
     assert search("   ") == []
+
+
+class _FakeResp:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+def _fake_naver(monkeypatch, payload, status=200):
+    from studyweb import net
+    from studyweb.config import settings
+    monkeypatch.setattr(settings, "naver_client_id", "id")
+    monkeypatch.setattr(settings, "naver_client_secret", "secret")
+    seen = {}
+
+    class S:
+        def get(self, url, params=None, headers=None, timeout=None):
+            seen.update(url=url, params=params, headers=headers)
+            return _FakeResp(payload, status)
+
+    monkeypatch.setattr(net, "session", lambda: S())
+    return seen
+
+
+def test_naver_strips_the_markup_it_wraps_matches_in(monkeypatch):
+    seen = _fake_naver(monkeypatch, {"items": [
+        {"title": "<b>AMD</b> Ryzen 5 9600X &amp; 메인보드",
+         "link": "https://example.com/a",
+         "description": "<b>9600X</b> 가격 비교"}]})
+    [r] = PROVIDERS["naver"]("9600X", 5)
+    assert r.title == "AMD Ryzen 5 9600X & 메인보드"
+    assert r.snippet == "9600X 가격 비교"
+    assert r.source == "naver"
+    assert seen["headers"]["X-Naver-Client-Id"] == "id"
+    assert seen["params"]["display"] == 5
+
+
+def test_naver_shop_returns_prices_as_numbers(monkeypatch):
+    _fake_naver(monkeypatch, {"items": [
+        {"title": "AMD 라이젠5 9600X", "link": "https://shopping.naver.com/x",
+         "lprice": "289000", "hprice": "0", "mallName": "쿠팡",
+         "productId": "42", "brand": "AMD", "maker": "AMD",
+         "category1": "디지털/가전", "category2": "PC부품",
+         "category3": "CPU", "category4": ""}]})
+    [r] = PROVIDERS["naver_shop"]("9600X", 5)
+    assert r.extra["price_low"] == 289000
+    # "0" is Naver's "not disclosed", not a free product
+    assert r.extra["price_high"] is None
+    assert r.extra["mall"] == "쿠팡"
+    assert r.extra["category"] == "디지털/가전 > PC부품 > CPU"
+    assert r.snippet == "289,000원 · 쿠팡"
+
+
+def test_naver_without_keys_is_a_clear_error(monkeypatch):
+    from studyweb.config import settings
+    monkeypatch.setattr(settings, "naver_client_id", "")
+    monkeypatch.setattr(settings, "naver_client_secret", "")
+    with pytest.raises(SearchError, match="NAVER_CLIENT_ID"):
+        PROVIDERS["naver"]("q", 3)
+
+
+def test_naver_joins_auto_but_the_shop_vertical_never_does(monkeypatch):
+    from studyweb.search import _auto_order
+    from studyweb.config import settings
+    monkeypatch.setattr(settings, "search_disable", ())
+    monkeypatch.setattr(settings, "naver_client_id", "id")
+    monkeypatch.setattr(settings, "naver_client_secret", "secret")
+    order = _auto_order()
+    assert order[0] == "naver"          # Korean results first when configured
+    assert "naver_shop" not in order    # product listings answer no web question
 
 
 def test_disabled_provider_is_never_called(monkeypatch):

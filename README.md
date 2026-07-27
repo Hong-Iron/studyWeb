@@ -239,9 +239,42 @@ Works out of the box with **no keys**:
 
 Used automatically when their env key is present (higher quality / quota):
 
-- **brave** (`BRAVE_API_KEY`), **tavily** (`TAVILY_API_KEY`),
-  **serpapi** (`SERPAPI_API_KEY`), **google_cse** (`GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX`),
-  **searxng** (`SEARXNG_URL`)
+- **naver** (`NAVER_CLIENT_ID` + `NAVER_CLIENT_SECRET`), **brave** (`BRAVE_API_KEY`),
+  **tavily** (`TAVILY_API_KEY`), **serpapi** (`SERPAPI_API_KEY`),
+  **google_cse** (`GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX`), **searxng** (`SEARXNG_URL`)
+
+### Korean search and real prices: `naver` / `naver_shop`
+
+The [Naver Open API](https://developers.naver.com) is free for 25,000 calls a
+day and indexes Korean pages far better than a scraped Bing SERP. Register an
+application, then set both env vars — `naver` joins the front of the auto chain.
+
+`naver_shop` is a separate provider that stays **out** of the auto chain: it
+returns product listings, not web pages. Ask for it by name and you get prices
+as numbers, with no page fetching and no LLM extraction:
+
+```bash
+studyweb search "AMD Ryzen 5 9600X" --provider naver_shop
+```
+
+```json
+{"title": "AMD 라이젠5 9600X", "url": "https://…", "source": "naver_shop",
+ "content": "289,000원 · 쿠팡",
+ "extra": {"price_low": 289000, "price_high": null, "mall": "쿠팡",
+           "brand": "AMD", "category": "디지털/가전 > PC부품 > CPU"}}
+```
+
+`extra` survives into `/search` responses, so a price comparison needs one call
+instead of a crawl. Naver reports `"0"` for an undisclosed price; that becomes
+`null`, never `0`.
+
+### A private SearXNG (no key, no quota)
+
+[`deploy/searxng/`](./deploy/searxng) has a compose file and a settings file
+that run a private metasearch instance next to studyweb — Google, Bing and the
+rest behind one endpoint, bound to loopback. The one setting that matters is
+`search.formats: [html, json]`; a stock SearXNG serves HTML only and studyweb
+sees an empty result list with no error.
 
 `provider="auto"` (the default) tries keyed providers first, then the free ones,
 so a single rate-limited backend never leaves you empty-handed.

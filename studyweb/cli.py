@@ -20,7 +20,8 @@ import json
 import sys
 
 from .config import settings
-from .search import search
+from .search import search, SearchError
+from .providers import ProviderError
 from .fetch import fetch_page
 from .research import research as _research_fn, build_rag as _build_rag
 from .collect import Corpus
@@ -294,7 +295,13 @@ def main(argv=None) -> int:
     if args.cmd == "rag" and not args.query and not args.url:
         print("rag needs a query or --url", file=sys.stderr)
         return 2
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (SearchError, ProviderError) as exc:
+        # A missing key or a dead backend is a configuration problem, not a
+        # crash — say so on one line instead of unrolling a traceback.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

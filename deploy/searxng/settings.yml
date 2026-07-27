@@ -1,0 +1,27 @@
+# Minimal SearXNG config for use as a studyweb search backend.
+# Everything not named here keeps SearXNG's own defaults.
+
+use_default_settings: true
+
+server:
+  # Mandatory. Generate one:  openssl rand -hex 32
+  secret_key: "REPLACE_ME"
+  # The bot limiter exists to protect public instances. This one is bound to
+  # loopback and answers only studyweb, which would otherwise be throttled.
+  limiter: false
+  image_proxy: false
+
+search:
+  # THE setting that matters: studyweb calls /search?format=json, and a stock
+  # SearXNG serves html only — you get an empty result list with no error.
+  formats:
+    - html
+    - json
+  default_lang: "ko"
+  autocomplete: ""
+
+engines:
+  # Unreachable from KR networks as of 2026-07; leaving it enabled costs a
+  # connect timeout on every search. Drop this block if yours can reach it.
+  - name: duckduckgo
+    disabled: true

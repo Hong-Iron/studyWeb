@@ -68,6 +68,11 @@ class Settings:
     google_cse_key: str = field(default_factory=lambda: os.environ.get("GOOGLE_CSE_KEY", ""))
     google_cse_cx: str = field(default_factory=lambda: os.environ.get("GOOGLE_CSE_CX", ""))
     searxng_url: str = field(default_factory=lambda: os.environ.get("SEARXNG_URL", ""))
+    # Naver Open API (developers.naver.com) — free 25k calls/day. Enables both
+    # the "naver" web provider and the "naver_shop" price vertical.
+    naver_client_id: str = field(default_factory=lambda: os.environ.get("NAVER_CLIENT_ID", ""))
+    naver_client_secret: str = field(
+        default_factory=lambda: os.environ.get("NAVER_CLIENT_SECRET", ""))
     # Providers to skip under provider="auto", comma-separated. Worth setting
     # when an engine is unreachable from your network: the chain otherwise pays
     # a full connect timeout per attempt before moving on, twice over when the
@@ -166,7 +171,7 @@ class Settings:
         d = asdict(self)
         # never leak secrets when a config is serialised (e.g. /health)
         for k in ("brave_api_key", "tavily_api_key", "serpapi_api_key",
-                  "google_cse_key", "api_key"):
+                  "google_cse_key", "api_key", "naver_client_id", "naver_client_secret"):
             d[k] = bool(d[k])  # report only presence
         d["provider_keys"] = {k: bool(v) for k, v in d["provider_keys"].items()}
         return d
