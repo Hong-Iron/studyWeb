@@ -234,6 +234,7 @@ Each stage:
 Works out of the box with **no keys**:
 
 - **bing** — scrapes Bing's HTML SERP (general web), decodes redirect URLs
+- **duckduckgo** — the HTML endpoint, as a second independent general engine
 - **wikipedia** — MediaWiki search API (great for study topics)
 
 Used automatically when their env key is present (higher quality / quota):
@@ -244,6 +245,14 @@ Used automatically when their env key is present (higher quality / quota):
 
 `provider="auto"` (the default) tries keyed providers first, then the free ones,
 so a single rate-limited backend never leaves you empty-handed.
+
+If an engine is unreachable from your network, take it out of the chain —
+otherwise every search pays its full connect timeout before moving on, and
+twice over when the domain-scoped recall retry fires:
+
+```bash
+STUDYWEB_SEARCH_DISABLE=duckduckgo      # comma-separated provider ids
+```
 
 ### Fully-local site search (no search engine at all)
 

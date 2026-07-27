@@ -277,6 +277,11 @@ def _auto_order() -> list[str]:
     # Two independent no-key general engines so a consent wall on one still
     # yields results, then Wikipedia as a reliable last resort.
     order += ["bing", "duckduckgo", "wikipedia"]
+    if settings.search_disable:
+        kept = [p for p in order if p not in settings.search_disable]
+        if not kept:
+            log.warning("STUDYWEB_SEARCH_DISABLE disabled every search provider")
+        return kept
     return order
 
 

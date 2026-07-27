@@ -77,3 +77,28 @@ def test_decode_ddg_redirect_url():
 
 def test_blank_query_returns_empty():
     assert search("   ") == []
+
+
+def test_disabled_provider_is_never_called(monkeypatch):
+    """An engine that is unreachable from this network costs a full connect
+    timeout on every search — twice when the recall retry fires. Disabling it
+    must take it out of the auto chain entirely, not just tolerate its error."""
+    from studyweb.search import _auto_order
+    from studyweb.config import settings
+
+    called = []
+
+    def spy(name):
+        def fn(q, n, market=None):
+            called.append(name)
+            return [] if name == "duckduckgo" else [
+                SearchResult(title="t", url="https://example.com/a", snippet="s")]
+        return fn
+
+    monkeypatch.setitem(PROVIDERS, "bing", spy("bing"))
+    monkeypatch.setitem(PROVIDERS, "duckduckgo", spy("duckduckgo"))
+    monkeypatch.setattr(settings, "search_disable", ("duckduckgo",))
+
+    assert "duckduckgo" not in _auto_order()
+    search("anything")
+    assert called == ["bing"]

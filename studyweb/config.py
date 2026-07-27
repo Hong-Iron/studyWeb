@@ -68,6 +68,13 @@ class Settings:
     google_cse_key: str = field(default_factory=lambda: os.environ.get("GOOGLE_CSE_KEY", ""))
     google_cse_cx: str = field(default_factory=lambda: os.environ.get("GOOGLE_CSE_CX", ""))
     searxng_url: str = field(default_factory=lambda: os.environ.get("SEARXNG_URL", ""))
+    # Providers to skip under provider="auto", comma-separated. Worth setting
+    # when an engine is unreachable from your network: the chain otherwise pays
+    # a full connect timeout per attempt before moving on, twice over when the
+    # domain-scoped recall retry fires.
+    search_disable: tuple = field(default_factory=lambda: tuple(
+        p.strip().lower() for p in os.environ.get("STUDYWEB_SEARCH_DISABLE", "").split(",")
+        if p.strip()))
 
     # ---- Research pipeline defaults ---------------------------------------
     default_max_results: int = field(default_factory=lambda: _env_int("STUDYWEB_MAX_RESULTS", 6))
