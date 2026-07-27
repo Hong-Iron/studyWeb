@@ -14,8 +14,16 @@ turn them into clean, RAG-ready data for study and data collection.
   produces embed-ready chunks with metadata (generic + LangChain/LlamaIndex shapes).
 - 🧠 **LLM tool-calling ready** — ships OpenAI-style tool schemas and a
   dispatcher; verified end-to-end with a local Gemma model via LM Studio.
+- 💰 **Prices, not snippets** — `studyweb prices` checks a list of shopping
+  sites and reads each price off the seller's own page, exact and sourced.
+- ☁️ **Any model** — one tool-calling loop over LM Studio, OpenAI, the Claude
+  API, NVIDIA NIM, the `claude` CLI, or any OpenAI-compatible endpoint, with
+  every call priced and counted.
 - 📦 **Tiny footprint** — only `requests` + `lxml`. The HTTP API server uses
   the standard library alone.
+- 🖥️ **Two GUIs** — the [LM Studio](https://github.com/Hong-Iron/studyweb-lmstudio)
+  and [Obsidian](https://github.com/Hong-Iron/studyweb-obsidian) plugins are thin
+  clients over this backend.
 
 > Why not just call Tavily? Cost, privacy, and control. `studyweb` does the
 > search, the content extraction, the relevance ranking, and a source-grounded
@@ -199,13 +207,30 @@ cost rather than inventing a figure. Turn recording off with
 
 ### GUI plugins (built on this backend)
 
-Two companion projects turn this backend into point-and-click tools — start
-`studyweb serve` and use one of:
+`studyweb` is the engine of a three-project suite. Two companion projects turn
+it into point-and-click tools — start `studyweb serve`, then install one:
 
-- **`studyweb-lmstudio`** — an LM Studio plugin. Any model in the LM Studio GUI
-  gets `web_search` / `open_url` / `collect_rag`. (`lms dev --install`)
-- **`studyweb-obsidian`** — an Obsidian plugin. A right-pane chat with your
-  local model + web tools, with one-click "save to note".
+- **[`studyweb-lmstudio`](https://github.com/Hong-Iron/studyweb-lmstudio)** — an
+  LM Studio Tools Provider plugin. Any model in the LM Studio GUI gets
+  `web_search` / `site_search` / `find_prices` / `open_url` / `collect_rag` /
+  `extract_data`, plus `ask_expert` (hands a hard question to an external API)
+  and `studyweb_status` (what's connected, what it cost). `lms dev --install`.
+- **[`studyweb-obsidian`](https://github.com/Hong-Iron/studyweb-obsidian)** — an
+  Obsidian plugin. A right-pane chat with a local *or* cloud model and the same
+  web tools, provider status lights, per-answer token/cost receipts, and
+  one-click "save research to note".
+
+Both are thin HTTP clients over this backend, so all the heavy lifting stays in
+one place and the plugins stay small and configurable.
+
+```
+   LM Studio GUI  ─▶  studyweb-lmstudio  ─┐
+                                          ├─HTTP─▶  studyweb  ─▶  the web
+   Obsidian pane  ─▶  studyweb-obsidian  ─┘         (search · prices · extract
+                              │                      · rank · RAG · providers)
+                              └─ chat + tool calls ─▶ LM Studio · OpenAI · Claude
+                                                      · NVIDIA NIM · Claude Code
+```
 
 ---
 
