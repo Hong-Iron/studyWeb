@@ -134,6 +134,40 @@ def test_cascade_falls_back_to_llm(monkeypatch):
     assert out["method"] == "llm" and out["data"]["price"] == "5000"
 
 
+# A shop with no markup at all: the real price is entity-free text sitting in
+# the tail of a display:none decoy. Compuzone ships exactly this.
+DECOY = """<html><head><meta property="og:title" content="라이젠5 9600X : 컴퓨존"/></head>
+<body><div class="pd info_price"><h3>판매가</h3>
+  <div><div style="display:none;">256,000</div>259,000<span>원</span></div>
+</div></body></html>"""
+
+
+def _wire_decoy(monkeypatch, md="판매가 256,000259,000원"):
+    monkeypatch.setattr(dataextract, "fetch_page", lambda u: _Doc(md=md))
+    monkeypatch.setattr(dataextract.net, "get", lambda u, **k: _Resp(DECOY))
+    monkeypatch.setattr(dataextract, "extract_structured", lambda *a, **k: None)
+
+
+def test_cascade_reads_the_dom_price_when_there_is_no_markup(monkeypatch):
+    _wire_decoy(monkeypatch)
+    out = dataextract.extract_data("https://x/p", render_mode="never", use_llm=False)
+    assert out["method"] == "dom"
+    assert out["data"]["price"] == "259000"       # not the 256,000 decoy
+    assert out["data"]["name"] == "라이젠5 9600X"
+
+
+def test_the_pages_own_price_label_overrides_the_model(monkeypatch):
+    # The model only ever sees cleaned text, where the decoy and the real price
+    # have run together. The label is the tie-breaker, and the disagreement is
+    # reported rather than swallowed.
+    _wire_decoy(monkeypatch)
+    monkeypatch.setattr(dataextract, "llm_extract",
+                        lambda content, schema, **k: {"name": "9600X", "price": "256000"})
+    out = dataextract.extract_data("https://x/p", render_mode="never")
+    assert out["method"] == "llm+dom" and out["data"]["price"] == "259000"
+    assert any("256000" in w and "259000" in w for w in out["warnings"])
+
+
 def test_cascade_warns_when_render_wanted_but_unavailable(monkeypatch):
     monkeypatch.setattr(settings, "recover_urls", False)  # isolate the render path
     monkeypatch.setattr(dataextract, "fetch_page", lambda u: _Doc(ok=False, wc=0, md=""))

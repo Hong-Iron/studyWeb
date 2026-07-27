@@ -172,7 +172,11 @@ print(out["usage"])   # tokens, cost in USD, latency, number of calls
 Pick a default with `STUDYWEB_PROVIDER_LLM=anthropic`, a model with
 `ANTHROPIC_MODEL=claude-sonnet-5`, and an endpoint with `NVIDIA_BASE_URL=...`
 (handy for a self-hosted NIM). The structured-data extractor uses the same
-layer, so `extract_data(url, llm_provider="openai")` works too.
+layer, so `extract_data(url, llm_provider="openai")` works too — though it
+reaches for a model last: structured markup first, then the price under the
+page's own price label, and only then the LLM. When both the model and the
+label produce a price, the label wins and the disagreement is reported in
+`warnings`.
 
 Claude models that removed sampling parameters are handled for you — studyweb
 omits `temperature` for them instead of tripping a 400 — and the Claude Code
@@ -403,11 +407,13 @@ studyweb search "갤럭시 탭 S11" --site danawa.com
 studyweb answer "갤럭시 탭 S11 최저가"  --site danawa.com
 ```
 
-A built-in registry covers common sites (Danawa, Coupang, Amazon, eBay, GitHub,
-StackOverflow, Reddit, PyPI, npm, YouTube, Wikipedia, …); for any other site it
-reads the homepage's search `<form>` to build the query URL automatically. Over
-HTTP: `POST /search {"query": ..., "site": "danawa.com"}`. As an LLM tool it's
-exposed as `site_search(site, query)`. Works best on server-rendered pages.
+A built-in registry covers common sites (Danawa, Compuzone, Enuri, Coupang,
+Amazon, eBay, GitHub, StackOverflow, Reddit, PyPI, npm, YouTube, Wikipedia, …);
+for any other site it reads the homepage's search `<form>` to build the query
+URL automatically — scoring the forms, so a shop that leads with a login box
+doesn't send every query to `/member/login`. Over HTTP:
+`POST /search {"query": ..., "site": "danawa.com"}`. As an LLM tool it's exposed
+as `site_search(site, query)`. Works best on server-rendered pages.
 
 ---
 
