@@ -61,6 +61,44 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "find_prices",
+            "description": (
+                "Look up what a product costs across several shopping sites at once "
+                "and return every price found, cheapest first, with min/median/max. "
+                "USE THIS FOR ANY 'how much does X cost' QUESTION — do not use "
+                "web_search with site: operators, which returns snippets, not prices. "
+                "Each price is read from the seller's own page, so it is exact and "
+                "carries its source URL. Sites that could not be read are listed in "
+                "'misses' with a reason: report those honestly, never present the "
+                "remaining prices as if the whole market was checked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "The product, as a shopper would type it into a shopping "
+                            'site — "AMD 라이젠5 9600X", not a sentence and not a query '
+                            "with site:/OR operators."
+                        ),
+                    },
+                    "sites": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": (
+                            "Domains to check. Omit for the configured default list "
+                            "(Korean shopping sites). Any domain works."
+                        ),
+                    },
+                    "per_site": {"type": "integer", "description": "Results priced per site (default 3).", "default": 3},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "open_url",
             "description": "Fetch one web page and return its cleaned main text (Markdown).",
             "parameters": {
@@ -164,6 +202,18 @@ def dispatch_tool(name: str, arguments: dict, *, budget_chars: int = 2400) -> di
                      "content": _truncate(r["content"], budget_chars // max(len(res["results"]), 1))}
                     for r in res["results"][:n]
                 ],
+            }
+        if name == "find_prices":
+            from .prices import find_prices
+            out = find_prices(_req_str(args, "query"), sites=args.get("sites"),
+                              per_site=_opt_int(args, "per_site", 3))
+            # Trim to what a model needs to answer and cite: the number, the
+            # name, the source. Snippets and brands only pad the context.
+            return {
+                "query": out["query"], "summary": out["summary"],
+                "quotes": [{"site": q["site"], "price": q["price"], "title": q["title"],
+                            "url": q["url"]} for q in out["quotes"][:12]],
+                "misses": out["misses"],
             }
         if name == "site_search":
             n = _opt_int(args, "max_results", 5)

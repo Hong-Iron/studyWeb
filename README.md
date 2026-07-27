@@ -128,10 +128,15 @@ print(out["final"])
 ```
 
 `run_agent` runs the full tool-calling loop: the model calls `web_search` /
-`open_url` / `collect_rag`, `studyweb` executes them against the live web, and
-the results are fed back until the model produces its answer. You can also grab
-the raw schemas with `from studyweb.lms import TOOL_SCHEMAS, dispatch_tool` and
-wire them into any OpenAI-style client yourself.
+`find_prices` / `open_url` / `collect_rag`, `studyweb` executes them against the
+live web, and the results are fed back until the model produces its answer. You
+can also grab the raw schemas with `from studyweb.lms import TOOL_SCHEMAS,
+dispatch_tool` and wire them into any OpenAI-style client yourself.
+
+**[`docs/llm-guide.md`](./docs/llm-guide.md) is written for the model**, not for
+you: which tool answers which question, how to phrase arguments, and what to do
+when one comes back empty. Paste it into a system prompt, or hand it to a model
+that keeps reaching for `web_search` with `site:` operators.
 
 ### 5. Cloud models (OpenAI · Claude · NVIDIA NIM · Claude Code)
 
