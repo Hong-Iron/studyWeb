@@ -81,14 +81,21 @@ class Handler(BaseHTTPRequestHandler):
     # -- helpers -----------------------------------------------------------
     def _send(self, code: int, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        if settings.cors_allow_origin:
-            self.send_header("Access-Control-Allow-Origin", settings.cors_allow_origin)
-            self.send_header("Vary", "Origin")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            if settings.cors_allow_origin:
+                self.send_header("Access-Control-Allow-Origin", settings.cors_allow_origin)
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client timed out or cancelled while we were still working.
+            # There is no one left to tell, and the error path would just call
+            # _send again — which is what turns this into a socketserver dump.
+            log.info("%s - client hung up before the response was sent",
+                     self.address_string())
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -154,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(exc)})
         except ProviderError as exc:
             return self._send(_PROVIDER_STATUS.get(exc.kind, 502), exc.to_dict())
+        except (BrokenPipeError, ConnectionResetError):
+            return log.info("%s - client hung up during GET %s", self.address_string(), path)
         except Exception as exc:  # noqa: BLE001 — report cleanly to the client
             log.exception("GET %s failed", path)
             return self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
@@ -219,6 +228,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(exc)})
         except ProviderError as exc:
             return self._send(_PROVIDER_STATUS.get(exc.kind, 502), exc.to_dict())
+        except (BrokenPipeError, ConnectionResetError):
+            return log.info("%s - client hung up during POST %s", self.address_string(), path)
         except Exception as exc:  # noqa: BLE001 — report cleanly to the client
             log.exception("POST %s failed", path)
             return self._send(500, {"error": f"{type(exc).__name__}: {exc}"})

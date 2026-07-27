@@ -163,3 +163,31 @@ def test_post_bad_input_is_400(monkeypatch):
         assert status == 400
     finally:
         httpd.shutdown(); httpd.server_close()
+
+
+# --- a client that hangs up mid-request is not a server error ---------------
+
+def test_send_survives_a_client_that_hung_up():
+    """A cancelled or timed-out client leaves us writing to a dead socket.
+    That deserves a log line, not a traceback — and above all the error path
+    must not call _send again, which is what turned one BrokenPipeError into
+    a socketserver 'Exception occurred during processing' dump."""
+
+    class DeadSocket:
+        closed = False
+
+        def write(self, _b):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            pass
+
+    h = server.Handler.__new__(server.Handler)
+    h.wfile = DeadSocket()
+    h.client_address = ("192.168.0.3", 49266)
+    h.request_version = "HTTP/1.1"
+    h.requestline = "POST /extract HTTP/1.1"
+    h.log_request = lambda *a, **k: None
+
+    h._send(200, {"results": []})          # the real response
+    h._send(500, {"error": "whatever"})    # what the old error path retried
