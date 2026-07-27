@@ -109,6 +109,17 @@ _PRICE_LABELS = ("판매가", "최저가", "할인가", "판매 가격", "가격
 _LABEL_CONTEXT = 120
 
 
+def parse_html(raw: bytes, encoding: str | None):
+    """Parse page bytes into a tree.
+
+    The encoding default matters: told nothing, lxml falls back to latin-1 and
+    every Korean label on the page turns to mojibake — at which point 판매가
+    never matches and a perfectly readable price looks absent. Undeclared HTML
+    is UTF-8 far more often than it is anything else.
+    """
+    return LH.fromstring(raw, parser=LH.HTMLParser(encoding=encoding or "utf-8"))
+
+
 def _prune(doc):
     """Drop the parts of a page that must not contribute a price."""
     for el in doc.xpath("//script|//style|//noscript|//template|//del|//s|//strike"):
@@ -188,8 +199,7 @@ def _price_of(url: str) -> _Read:
         # worth repeating back ("blocked by robots.txt", "HTTP 403", …).
         return _Read(problem=(str(exc).split(":", 1)[0] or type(exc).__name__)[:60])
     try:
-        parser = LH.HTMLParser(encoding=resp.declared_encoding) if resp.declared_encoding else LH.HTMLParser()
-        doc = LH.fromstring(resp.content, parser=parser)
+        doc = parse_html(resp.content, resp.declared_encoding)
     except Exception as exc:  # noqa: BLE001 — an unparseable page is a miss
         log.debug("price parse failed for %s: %s", url, exc)
         return _Read(problem="the page could not be parsed")

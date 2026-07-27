@@ -2,7 +2,8 @@
 
 You are reading this because you have studyweb's tools available. This document
 is written to *you*, the model. It tells you which tool answers which question,
-how to phrase the arguments, and what to do when a tool comes back empty.
+how to phrase the arguments, what the results mean, and what to do when a tool
+comes back empty.
 
 The short version, if you only read one section:
 
@@ -19,6 +20,7 @@ The short version, if you only read one section:
 | The user wants | Tool | Why not the others |
 |---|---|---|
 | The price of a product | **`find_prices`** | `web_search` returns snippets *about* the product, not its price |
+| The price on one named shop | **`find_prices`** with `sites` | Same tool — the shop goes in the argument, never in the query text |
 | A current fact, news, an explanation | **`web_search`** | It searches, reads the pages, and returns a grounded answer |
 | Results from one specific site | **`site_search`** | Goes through that site's own search page — no search engine, so it isn't rate-limited or blocked |
 | The contents of a page you already have a URL for | **`open_url`** | Searching again for a page you can already open wastes a call |
@@ -52,11 +54,9 @@ that on is not an apology, it is part of the answer: "다나와 기준 최저 26
 **One call per question, then stop.** These tools hit the live network — each
 call costs seconds. Do not call the same tool twice with near-identical
 arguments hoping for a better answer. If a call comes back empty, change the
-approach (see §4), not the wording.
+approach (see §5), not the wording.
 
-## 3. The tools
-
-### `find_prices(query, sites?, per_site?)`
+## 3. `find_prices` — the price tool in detail
 
 What something costs, across several shopping sites at once.
 
@@ -68,33 +68,71 @@ Returns:
 
 ```json
 {"query": "…",
- "summary": {"count": 2, "currency": "KRW", "min": 260710, "median": 262855,
-             "max": 265000, "cheapest_url": "https://…", "by_site": {"danawa.com": 260710}},
- "quotes": [{"site": "danawa.com", "price": 260710, "method": "json-ld",
-             "title": "AMD 라이젠5-6세대 9600X (멀티팩 정품)", "url": "https://…"}],
+ "summary": {"count": 6, "currency": "KRW", "min": 252000, "median": 262610,
+             "max": 1869990, "cheapest_url": "https://…",
+             "by_site": {"enuri.com": 252000, "compuzone.co.kr": 259000, "danawa.com": 260720}},
+ "quotes": [{"site": "enuri.com", "price": 252000, "method": "json-ld",
+             "title": "AMD 라이젠5-6세대 9600X (그래니트 릿지) [멀티팩 정품]", "url": "https://…"}],
  "misses": [{"site": "coupang.com", "reason": "no results — the site's search page returned nothing to a static fetch"},
             {"site": "11st.co.kr", "reason": "3 page(s) found, none priced — blocked by robots.txt"}]}
 ```
 
+### How to read it
+
 - `summary` is `null` when nothing could be priced. That means **no price was
   found** — it does not mean the item is free or unavailable. Say so and list
   the misses.
-- `quotes` is sorted cheapest first. Each price came from that seller's own page.
-  A quote's `method` says how it was read — `json-ld`/`microdata`/`opengraph`
-  come from the page's own product markup, `dom` was read off the rendered page
-  under its price label, `listing` came from the search-result row. All four are
-  the seller's own number; none of them is a guess.
-- `quotes` follows each site's ranking, so a query for a part can bring back
-  whole machines that contain it. Check the titles before quoting `summary.max`
-  or `median` — `min` and `by_site` are the figures worth reporting.
-- `misses` lists sites that could not be read. **Always mention them** when you
-  report a minimum, because the real minimum may be on a site that failed. The
-  reason says which kind of failure it was, and they are not interchangeable:
-  "blocked by robots.txt" means studyweb declined to fetch the page, not that
-  the price is unavailable to a human.
-- Prices are what the site listed at that moment, before shipping and options.
-  Report them as such; do not describe one as "the cheapest in Korea".
-- `sites` accepts any domains. Omit it to use the configured default list.
+- `quotes` is sorted cheapest first, and every price came from that seller's own
+  page. No number here is a guess or an estimate.
+- `quotes` follows each site's own ranking, so a query for a *part* can bring
+  back whole machines that contain it — that is why `max` above is 1,869,990원
+  for a CPU. **Check the titles before quoting `summary.max` or `median`.**
+  `min`, `by_site` and the individual quotes are the figures worth reporting.
+- Prices are what the site listed at that moment, before shipping, options and
+  card discounts. Report them as such; do not call one "the cheapest in Korea".
+
+### `method` — how exact a quote is
+
+Every quote says how its number was read. All of them are the seller's own
+figure, but they are not equally precise:
+
+| `method` | Where it came from | Treat it as |
+|---|---|---|
+| `json-ld`, `microdata`, `opengraph` | The page's own product markup (`Offer.price`) | Exact — the site published this number for machines to read |
+| `naver_api` | Naver's shopping API | Exact |
+| `dom` | Read off the rendered page, under its price label (판매가 / 최저가 / Price) | Exact, but it is the number the page *displays*; a page showing both a cash and a card price may give either |
+| `listing` | The price the site's search-results row showed | Exact for that row, but it may be a "from" price for a product with options |
+
+You do not need to mention `method` unless the user asks how sure you are, or
+two sites disagree by a small margin — then it is the honest explanation.
+
+### `misses` — and what each reason means
+
+**Always mention misses when you report a minimum**, because the real minimum
+may be on a site that failed. The reasons are not interchangeable:
+
+| Reason | What actually happened | What to say |
+|---|---|---|
+| `no results — the site's search page returned nothing to a static fetch` | The shop builds its results with JavaScript; there was nothing to read | "이 사이트는 조회하지 못했습니다" — the product may well be there |
+| `N page(s) found, none priced — blocked by robots.txt` | studyweb found the products but the site's robots.txt forbids fetching them | Say it was **blocked**, not that there is no price. A human can open it |
+| `N page(s) found, none priced — no price in the page` | The pages loaded but published no price anywhere readable | The price is probably behind a login, an option picker, or "가격 문의" |
+| A site simply absent from both `quotes` and `misses` | It was not in the list at all | Check whether the user named it; pass it in `sites` |
+
+### `sites` — naming shops yourself
+
+`sites` accepts **any** domains; omit it for the configured default list. Shops
+that are not in studyweb's registry get their search form read off their
+homepage, so an ordinary server-rendered shop usually just works.
+
+```json
+{"query": "AMD 라이젠5 9600X", "sites": ["compuzone.co.kr"]}
+```
+
+When the user names a shop, put it in `sites` — do not write "컴퓨존에서" into
+the query, and do not fall back to `web_search`. If that shop comes back as a
+miss, §5 says what to do next.
+
+## 4. The other tools
 
 ### `web_search(query, max_results?, include_domains?)`
 
@@ -119,30 +157,43 @@ differed if it matters.
 
 ### `extract_data(url, fields?)`
 
-Pulls structured fields out of one page: `{url, method, data, warnings}`.
-`method` tells you where the data came from — `structured:json-ld` means the site
-published it itself and the values are exact; an LLM-based method means they were
-inferred and deserve more caution. Ask for the fields you need
-(`["name", "price", "release_date"]`) rather than taking the default set.
+Pulls structured fields out of one page: `{url, method, data, warnings}`. Ask
+for the fields you need (`["name", "price", "specs"]`) rather than taking the
+default set. `method` tells you where the data came from:
+
+| `method` | Meaning |
+|---|---|
+| `structured:json-ld` / `:microdata` / `:opengraph` | The site published the values itself — exact |
+| `dom` | No markup; the price was read under the page's own price label — exact, but only `name` and `price` are filled in |
+| `llm` | A model inferred the fields from the page text — the least certain, treat with caution |
+| `llm+dom` | A model filled the fields, but the price came from the page's price label because the two disagreed. **Read `warnings`** — it names both numbers |
+| `none` | Nothing could be extracted |
+
+Always check `warnings`. It is where a recovered URL, a missing browser, or a
+model/page price disagreement is reported.
 
 ### `collect_rag(query, max_results?)`
 
 Search + crawl + clean into chunks for a study dataset. Not for answering a
 single question — it returns a lot of text.
 
-## 4. When a tool comes back empty
+## 5. When a tool comes back empty
 
 Change the approach, don't repeat the call.
 
 | What you got | Do this |
 |---|---|
-| `find_prices` → `summary: null`, all misses | Say no price was found and name the sites that failed. Then try `site_search` on one of them and `extract_data` on a result. |
+| `find_prices` → `summary: null`, all misses | Say no price was found and name the sites that failed. Then `site_search` one of them and `extract_data` a result. |
+| `find_prices` → the shop the user named is in `misses` | Try `site_search({"site": "that-shop.com", …})`. If it returns links, `extract_data` the best one. If it returns nothing, the shop needs JavaScript — say that plainly and offer the prices you *did* get. |
 | `web_search` → no results | Drop qualifiers and search the core noun. If you named sites, try `site_search` on one instead. |
 | `site_search` → empty | That site's listing probably needs JavaScript. Try `web_search` with `include_domains` for the same site. |
 | `open_url` → error | Search for the page rather than guessing another URL. Invented URLs are worse than none. |
 | Any tool → `{"error": …}` | Read the message. A missing key or an unreachable backend is a configuration problem: report it plainly instead of retrying. |
 
-## 5. Worked examples
+Escalate at most one step. Two failed approaches is an answer — "확인하지
+못했습니다, 이유는 …" — not a reason for a third.
+
+## 6. Worked examples
 
 **"라이젠 9600X 가격 얼마야?"**
 
@@ -155,6 +206,17 @@ find_prices({"query": "AMD 라이젠5 9600X"})
 
 Not this: `web_search({"query": "라이젠 9600X 가격 (site:danawa.com OR site:coupang.com)"})`
 — that returns nothing usable, and any number you write from it is a guess.
+
+**"컴퓨존에서 9600X 얼마야?"**
+
+```
+find_prices({"query": "AMD 라이젠5 9600X", "sites": ["compuzone.co.kr"]})
+```
+→ 컴퓨존 기준 259,000원 (쿨러포함 멀티팩), 쿨러미포함은 264,500원입니다.
+출처: https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1164055
+
+The shop belongs in `sites`. Do not put "컴퓨존" in the query text, and do not
+reach for `web_search` because the shop sounds unusual.
 
 **"다나와에서 9600X 리뷰 좋은 거 찾아줘"**
 
@@ -169,10 +231,13 @@ open_url({"url": "<the most relevant result>"})
 extract_data({"url": "…", "fields": ["name", "price", "specs"]})
 ```
 
-## 6. Anti-patterns
+## 7. Anti-patterns
 
 - `site:` or `OR` operators inside a query string — the arguments do that job.
 - Reporting a minimum price without mentioning `misses`.
+- Reading "blocked by robots.txt" as "this product has no price".
+- Quoting `summary.max` or `median` without checking that every quote is the
+  same kind of thing.
 - Repeating a failed search with slightly different words.
 - Calling `web_search` for a page you already have the URL of.
 - Writing a number the tools didn't return.

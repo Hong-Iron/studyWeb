@@ -4,6 +4,7 @@ Combines everything into one call, ``extract_data``:
 
   acquire content   static fetch  ->  (headless render fallback if thin/JS)
   extract           Layer 1 structured markup (JSON-LD/microdata/OG)
+                    Layer 2 the labelled price in the page's own DOM
                     Layer 3 local-LLM schema extraction (any readable page)
 
 So a caller can ask "give me {name, price, specs} from this URL" and it works
@@ -177,10 +178,21 @@ def extract_data(url: str, *, schema=None, render_mode: str = "auto",
                 "rendered": rendered, "recovered_from": recovered_from,
                 "data": data, "warnings": warnings}
 
-    # 5) LLM fallback
+    # 5) The page publishes no markup. Before asking a model, read the price the
+    # way `find_prices` does — off the DOM, under its own price label. This is
+    # free, and it is what the page *displays*: a model reading the cleaned text
+    # sees the decoy that shops plant in a display:none div right in front of
+    # the real digits, and will repeat it.
+    dom = _dom_product(html, enc, url)
+
+    # 6) LLM fallback
     if use_llm:
         content = doc.markdown or doc.text
         if not content:
+            if dom:
+                return {"url": url, "method": "dom", "rendered": rendered,
+                        "recovered_from": recovered_from, "data": dom,
+                        "warnings": warnings}
             warnings.append("no readable content to extract from")
             return {"url": url, "method": "none", "rendered": rendered,
                     "recovered_from": recovered_from, "data": None,
@@ -189,14 +201,48 @@ def extract_data(url: str, *, schema=None, render_mode: str = "auto",
         try:
             extracted = llm_extract(content, schema, provider=llm_provider,
                                     usage_out=used)
-            return {"url": url, "method": "llm", "rendered": rendered,
+            method = "llm"
+            if dom and isinstance(extracted, dict):
+                # The labelled price wins: it is the page's own number, not a
+                # reading of prose. Say so when the two disagree.
+                from .prices import price_from_field
+                llm_price = price_from_field(extracted.get("price"))
+                if llm_price != int(dom["price"]):
+                    if llm_price is not None:
+                        warnings.append(
+                            f"model read the price as {llm_price}; the page's own "
+                            f"price label says {dom['price']} — using the label")
+                    extracted["price"] = dom["price"]
+                    method = "llm+dom"
+            return {"url": url, "method": method, "rendered": rendered,
                     "recovered_from": recovered_from, "data": extracted,
                     "warnings": warnings, "usage": used[0] if used else None}
         except LLMError as exc:
             warnings.append(str(exc))
 
+    if dom:
+        return {"url": url, "method": "dom", "rendered": rendered,
+                "recovered_from": recovered_from, "data": dom,
+                "warnings": warnings}
     return {"url": url, "method": "none", "rendered": rendered,
             "recovered_from": recovered_from, "data": None, "warnings": warnings}
+
+
+def _dom_product(html: bytes | None, enc: str | None, url: str) -> dict | None:
+    """`{name, price, …}` from a page that publishes no structured markup."""
+    if not html:
+        return None
+    from .prices import price_from_dom, parse_html, _page_name
+    try:
+        doc = parse_html(html, enc)
+    except Exception:  # noqa: BLE001 — an unparseable page is simply not a hit
+        return None
+    price = price_from_dom(doc)
+    if price is None:
+        return None
+    # price_from_dom only recognises ₩ / 원 / KRW, so the currency is not a guess.
+    return {"source": "dom", "type": "product", "name": _page_name(doc),
+            "price": str(price), "currency": "KRW", "url": url}
 
 
 def _rendered_document(url: str, html_str: str):
