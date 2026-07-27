@@ -15,6 +15,19 @@ JSONLD = """<html><head><script type="application/ld+json">
 
 BARE = "<html><body><p>가격 정보 없음</p></body></html>"
 
+# Compuzone in miniature: no markup at all, a decoy price hidden behind
+# display:none with the real digits sitting in its *tail*, and an unlabelled
+# promo banner earlier in the document.
+DECOY = """<html><head><meta property="og:title" content="[AMD] 라이젠5 9600X : 컴퓨존"/>
+</head><body>
+  <div class="live"><p class="Live_prd_name">래플 상품</p>
+                    <p class="Live_price_name"><span>99%</span> 100원</p></div>
+  <div class="pd info_price"><h3>판매가</h3>
+    <div class="price_real"><div style="display:none;">256,000</div>259,000<span>원</span></div>
+  </div>
+  <div class="card"><p>[토스페이] 50,000원 즉시할인 (1,000,000원 이상 결제 시)</p></div>
+</body></html>"""
+
 
 class _Resp:
     def __init__(self, html):
@@ -59,7 +72,59 @@ def test_structured_price_fields_stand_without_a_currency_marker():
     assert prices.price_from_field("") is None
 
 
+# --- reading a price off the page itself ------------------------------------
+
+def _dom(html):
+    from lxml import html as LH
+    return LH.fromstring(html)
+
+
+def test_dom_price_beats_a_hidden_decoy_and_an_unlabelled_banner():
+    # 256,000 is a display:none decoy, 100원 is a promo with no price label,
+    # 50,000원 is a coupon. Only the number under 판매가 is the price.
+    assert prices.price_from_dom(_dom(DECOY)) == 259000
+
+
+def test_dom_price_needs_a_label():
+    # A bare amount on a page is as likely to be shipping or a coupon; a miss
+    # the caller can see beats a number they'd have to double-check.
+    assert prices.price_from_dom(_dom(
+        "<html><body><div>무료배송 3,000원</div></body></html>")) is None
+    assert prices.price_from_dom(_dom(BARE)) is None
+
+
+def test_dom_price_ignores_a_struck_through_list_price():
+    assert prices.price_from_dom(_dom(
+        '<html><body><div><span>판매가</span>'
+        '<del>300,000원</del><strong>259,000원</strong></div></body></html>')) == 259000
+
+
+def test_page_name_drops_the_site_suffix():
+    assert prices._page_name(_dom(DECOY)) == "[AMD] 라이젠5 9600X"
+
+
 # --- the pipeline -----------------------------------------------------------
+
+def test_a_page_with_no_markup_still_yields_its_labelled_price(monkeypatch):
+    _wire(monkeypatch,
+          hits={"compuzone.co.kr": [SearchResult("AMD(소켓AM5) / 6코어 / 12쓰레드",
+                                                 "https://c/1")]},
+          pages={"https://c/1": DECOY})
+    [q] = prices.find_prices("9600X", sites=["compuzone.co.kr"])["quotes"]
+    assert q["price"] == 259000 and q["method"] == "dom"
+    # the listing linked spec text, so the page's own name has to win
+    assert q["title"] == "[AMD] 라이젠5 9600X"
+
+
+def test_a_miss_names_its_cause(monkeypatch):
+    _wire(monkeypatch, hits={"11st.co.kr": [SearchResult("t", "https://e/1")]},
+          pages={})
+    def blocked(url, **kw):
+        raise RuntimeError(f"blocked by robots.txt: {url}")
+    monkeypatch.setattr(prices.net, "get", blocked)
+    [miss] = prices.find_prices("9600X", sites=["11st.co.kr"])["misses"]
+    assert "blocked by robots.txt" in miss["reason"]
+
 
 def test_price_comes_from_the_product_page_not_the_listing(monkeypatch):
     _wire(monkeypatch,
@@ -96,7 +161,8 @@ def test_pages_without_a_price_are_a_miss_with_a_reason(monkeypatch):
           pages={"https://e/1": BARE})
     out = prices.find_prices("9600X", sites=["11st.co.kr"])
     assert out["quotes"] == [] and out["summary"] is None
-    assert "none published a price" in out["misses"][0]["reason"]
+    assert "none priced" in out["misses"][0]["reason"]
+    assert "no price in the page" in out["misses"][0]["reason"]
 
 
 def test_summary_ranks_by_price_and_keeps_the_cheapest_per_site(monkeypatch):

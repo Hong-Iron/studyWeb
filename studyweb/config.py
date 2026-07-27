@@ -42,6 +42,15 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
+# Sites `studyweb prices` checks, in buyer order. The first three answer a
+# plain fetch and are what actually produces numbers; the marketplaces after
+# them serve a JS shell and need STUDYWEB_RENDER (or, for Naver, API keys) —
+# they stay in the list so an incomplete check reports itself as one.
+DEFAULT_PRICE_SITES: tuple[str, ...] = (
+    "danawa.com", "compuzone.co.kr", "enuri.com",
+    "shopping.naver.com", "11st.co.kr", "coupang.com",
+)
+
 
 @dataclass
 class Settings:
@@ -84,8 +93,7 @@ class Settings:
     # Sites checked by `studyweb prices` / POST /prices, in buyer order.
     price_sites: tuple = field(default_factory=lambda: tuple(
         s.strip() for s in os.environ.get(
-            "STUDYWEB_PRICE_SITES",
-            "danawa.com,shopping.naver.com,11st.co.kr,coupang.com").split(",")
+            "STUDYWEB_PRICE_SITES", ",".join(DEFAULT_PRICE_SITES)).split(",")
         if s.strip()))
 
     # ---- Research pipeline defaults ---------------------------------------

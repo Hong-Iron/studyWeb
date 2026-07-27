@@ -328,20 +328,47 @@ doesn't use a search engine at all:
 studyweb prices "AMD 라이젠5 9600X" --per-site 2
 ```
 ```
-      260,710원  danawa.com   AMD 라이젠5-6세대 9600X (그래니트 릿지) (멀티팩 정품)
+      252,000원  enuri.com       AMD 라이젠5-6세대 9600X (그래니트 릿지) [멀티팩 정품]
+                 https://www.enuri.com/detail.jsp?modelno=127363413
+      259,000원  compuzone.co.kr [AMD] 라이젠5 그래니트 9600X (…/쿨러포함) 멀티팩
+                 https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1164055
+      260,720원  danawa.com      AMD 라이젠5-6세대 9600X (그래니트 릿지) (멀티팩 정품)
                  https://prod.danawa.com/info/?pcode=62794079
-      265,000원  danawa.com   AMD 라이젠5-6세대 9600X (그래니트 릿지) (벌크 정품)
-                 https://prod.danawa.com/info/?pcode=99286724
 
-2건 · 최저 260,710원 · 중앙값 262,855원 · 최고 265,000원  (2.7s)
-  - 11st.co.kr: 2 page(s) found, none published a price
+6건 · 최저 252,000원 · 중앙값 265,000원 · 최고 2,429,000원  (6.3s)
+  - shopping.naver.com: no results — the site's search page returned nothing to a static fetch
+  - 11st.co.kr: 3 page(s) found, none priced — blocked by robots.txt
   - coupang.com: no results — the site's search page returned nothing to a static fetch
 ```
 
 Each site's **own** search page is crawled, then the price is read off the
-product page's structured markup (`Offer.price` in JSON-LD, microdata,
-OpenGraph). No API key, no LLM, ~3 seconds. `POST /prices` returns the same as
-JSON, and `STUDYWEB_PRICE_SITES` sets the default site list.
+product page — in this order:
+
+| `method` | Where the number came from |
+|---|---|
+| `json-ld` / `microdata` / `opengraph` | The page's structured markup (`Offer.price`). Exact. |
+| `dom` | The page itself, under a visible price label (판매가, 최저가, Price…). For shops that publish no markup at all. |
+| `listing` | The price the site's own search results already showed. |
+| `naver_api` | Naver's shopping API, when its keys are set. |
+
+The `dom` reader drops hidden nodes before it reads, because Korean shops
+routinely plant a decoy — Compuzone ships `<div style="display:none">256,000</div>`
+directly in front of the real digits. It also refuses to answer without a price
+label nearby: a promo banner's "99% 100원" is not what the page is selling, and
+a reported miss beats a number you'd have to double-check.
+
+No API key, no LLM, a few seconds. `POST /prices` returns the same as JSON, and
+`STUDYWEB_PRICE_SITES` sets the default site list.
+
+Sites that answer a plain fetch today: **danawa.com**, **compuzone.co.kr**,
+**enuri.com**. Naver Shopping, 11st and Coupang serve a JS shell (or block
+product pages in robots.txt) and are reported as misses — set `STUDYWEB_RENDER=true`
+with Chromium installed, or Naver API keys, to bring them in.
+
+Adding a shop is usually one line in `sitesearch.SITES`; for a site with no
+`<form>`-based search, point the entry at whatever URL its own results page
+actually fetches. Unregistered sites are handled by reading the homepage's
+search form.
 
 Two rules it sticks to:
 
