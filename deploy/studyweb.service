@@ -1,0 +1,40 @@
+# /etc/systemd/system/studyweb.service
+#
+#   sudo useradd --system --home /var/lib/studyweb studyweb
+#   sudo pipx install --global git+https://github.com/Hong-Iron/studyWeb
+#   sudo install -m 600 -o studyweb deploy/env.example /opt/studyweb/env
+#   sudo systemctl enable --now studyweb
+#
+# Binds to loopback: put Caddy/nginx (TLS) in front, or reach it over an SSH
+# tunnel. Change to 0.0.0.0 only on a LAN, and only with STUDYWEB_API_KEY set.
+
+[Unit]
+Description=studyweb API (search, crawl, RAG, model providers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=studyweb
+EnvironmentFile=/opt/studyweb/env
+ExecStart=/usr/local/bin/studyweb serve --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=3
+# SIGTERM triggers a graceful shutdown, so the default KillMode is right.
+TimeoutStopSec=20
+
+# /var/cache/studyweb and /var/lib/studyweb, owned by the service user.
+CacheDirectory=studyweb
+StateDirectory=studyweb
+ConfigurationDirectory=studyweb
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
