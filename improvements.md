@@ -1,8 +1,38 @@
 # studyweb — Improvements toward production
 
-Status: 53/53 tests pass. The engine is solid for local use; the items below are
-what stands between "works on my machine" and something you can publish, expose
-on a LAN, or run unattended. Ordered by priority.
+Status: 219/220 tests pass (220/220 with the `scrapling` extra installed). The
+engine is solid for local use; the items below are what stands between "works on
+my machine" and something you can publish, expose on a LAN, or run unattended.
+Ordered by priority.
+
+## Shipped
+
+### 0.3.0 — pluggable fetch engines + self-healing selectors
+
+Closes the two limitations the README used to just admit to: no JavaScript, and
+no answer to a site that blocks scripts.
+
+- `engines.py` — one transport contract behind five backends
+  (`static` → `scrapling` → `chrome` → `dynamic` → `stealth`), ordered by cost.
+  The politeness layer (robots, SSRF, per-host throttle, size cap, cache) stays
+  in `net.get()` and wraps *every* engine, so a stronger backend never buys
+  reach at the cost of safety. `stealth` is opt-in and never on the ladder.
+- Escalation on two separate signals: an anti-bot wall (status/body markers,
+  handled in `net.get`) and a JS shell (word count after extraction, handled in
+  `fetch_page` — the signal does not exist until the page has been parsed).
+- `adaptive.py` — Scrapling's element tracking for site adapters, so Itmaya's
+  hardcoded `.price_system_start` relocates by similarity instead of silently
+  reading zero. Scalar fields only: relocation finds *an element*, and applying
+  it to the nested component table would invent prices rather than recover them.
+- Scrapling is an optional extra. Without it the ladder collapses to
+  `[static]`, adaptive selection no-ops, and the install stays `requests` +
+  `lxml`.
+- `studyweb engines`, `studyweb fetch --engine`, and both maps on `GET /health`.
+
+Remaining from this area: nothing blocking. Scrapling's Spider machinery
+(pause/resume, sessions/cookies, proxy rotation, XHR capture) was deliberately
+left out — studyweb crawls 5–10 pages per question, so it would not pay for
+itself. Revisit if login-gated pages or large crawls become a use case.
 
 ## P0 — Correctness & security bugs
 

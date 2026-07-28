@@ -6,7 +6,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from urllib.parse import urlsplit
 
-from . import net
+from . import engines, net
+from .config import settings
 from .extract import extract, Link
 
 
@@ -42,11 +43,10 @@ class Document:
         return d
 
 
-def fetch_page(url: str, *, use_cache: bool = True) -> Document:
-    """Fetch and extract one URL. Never raises for network/extract issues —
-    failures are reported on ``Document.error`` so batch callers keep going."""
+def _fetch_once(url: str, *, use_cache: bool, engine: str | None) -> Document:
+    """Fetch and extract through exactly one engine, no escalation."""
     try:
-        resp = net.get(url, use_cache=use_cache)
+        resp = net.get(url, use_cache=use_cache, engine=engine, escalate=False)
     except net.FetchError as exc:
         return Document(url=url, final_url=url, status=0, error=str(exc),
                         fetched_at=time.time())
@@ -72,19 +72,72 @@ def fetch_page(url: str, *, use_cache: bool = True) -> Document:
         except Exception:  # noqa: BLE001 — never let an adapter break a fetch
             pass
 
+    meta = dict(ex.meta)
+    meta["fetch_engine"] = resp.engine
     return Document(
         url=url, final_url=resp.url, status=resp.status,
         title=ex.title, text=ex.text, markdown=ex.markdown,
-        passages=ex.passages, links=ex.links, meta=ex.meta,
+        passages=ex.passages, links=ex.links, meta=meta,
         content_type=ctype, fetched_at=time.time(),
     )
 
 
+def _should_escalate(doc: Document) -> bool:
+    """True if a stronger engine could plausibly do better on this page.
+
+    Deliberately stricter than :func:`studyweb.dataextract._looks_thin`, which
+    runs only when a caller has already asked for structured data and is willing
+    to pay for a browser. This one gates *every* fetch, so it fires on evidence
+    that the transport failed — a wall, a network error, or an all-but-empty
+    body that means a JS shell — and never merely because a page is short. A
+    404 is an answer: no browser is going to invent the page.
+    """
+    if doc.status == 0 or doc.status in engines.BLOCK_STATUSES:
+        return True
+    if doc.status != 200:
+        return False
+    return doc.word_count < settings.escalate_thin_words
+
+
+def fetch_page(url: str, *, use_cache: bool = True, engine: str | None = None,
+               escalate: bool | None = None) -> Document:
+    """Fetch and extract one URL. Never raises for network/extract issues —
+    failures are reported on ``Document.error`` so batch callers keep going.
+
+    Escalation is decided here rather than in :func:`studyweb.net.get` because
+    the signal only exists after extraction: a JS shell answers 200 with real
+    HTML, and it is the *extracted word count* that gives it away. When a page
+    comes back thin, the stronger engines on the ladder are tried in turn and
+    the fullest result wins. ``net.get`` still handles the other signal — an
+    outright anti-bot wall — on its own.
+    """
+    doc = _fetch_once(url, use_cache=use_cache, engine=engine)
+    if not (settings.fetch_escalate if escalate is None else escalate):
+        return doc
+    if not _should_escalate(doc):
+        return doc
+
+    best = doc
+    # Escalate from the engine that actually ran, not the one we asked for: if
+    # the configured start was unavailable, net.get already fell forward to a
+    # stronger rung and re-trying it here would fetch the same page twice.
+    ran = doc.meta.get("fetch_engine") or engine
+    for eng in engines.escalation_targets(ran):
+        alt = _fetch_once(url, use_cache=use_cache, engine=eng.name)
+        if alt.ok and alt.word_count > best.word_count:
+            alt.meta["escalated_from"] = doc.meta.get("fetch_engine", "") or "static"
+            best = alt
+            if not _should_escalate(best):
+                break  # good enough; don't pay for a heavier engine
+    return best
+
+
 def fetch_many(urls: list[str], *, use_cache: bool = True,
-               max_workers: int | None = None) -> list[Document]:
+               max_workers: int | None = None,
+               engine: str | None = None) -> list[Document]:
     """Fetch many URLs concurrently (order preserved)."""
     def worker(u: str) -> Document:
-        return fetch_page(u, use_cache=use_cache)
+        return fetch_page(u, use_cache=use_cache, engine=engine)
     out = net.get_many(urls, worker=worker, max_workers=max_workers)
     # get_many captures exceptions as values; normalise any stragglers.
     docs = []

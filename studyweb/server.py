@@ -128,8 +128,16 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         # Public, unauthenticated endpoints.
         if path in ("/", "/health"):
+            from . import adaptive, engines
             return self._send(200, {"status": "ok", "service": "studyweb",
-                                    "version": __version__, "config": settings.as_dict()})
+                                    "version": __version__,
+                                    # Which transports this box can actually
+                                    # reach for; a ladder that silently
+                                    # collapsed to [static] is otherwise
+                                    # invisible until pages come back thin.
+                                    "engines": engines.status(),
+                                    "adaptive": adaptive.status(),
+                                    "config": settings.as_dict()})
         if path in ("/tool-schema", "/tools"):
             # The prompt ships with the schemas: a client that pulls the tools
             # from here shouldn't have to carry its own stale copy of the rules

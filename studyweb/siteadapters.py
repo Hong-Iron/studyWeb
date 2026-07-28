@@ -21,21 +21,38 @@ ranges but no search box.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
 from lxml import html as LH
 
-from . import net
+from . import adaptive, net
 from .extract import Extracted
 from .rank import tokenize, BM25
 from .search import SearchResult
+
+log = logging.getLogger("studyweb.siteadapters")
 
 
 def _parse(raw: bytes, encoding: str | None):
     parser = LH.HTMLParser(encoding=encoding) if encoding else LH.HTMLParser()
     return LH.fromstring(raw, parser=parser)
+
+
+@dataclass
+class _PageCtx:
+    """The original bytes behind an already-parsed lxml doc.
+
+    Adaptive relocation reparses with Scrapling, so it needs the source rather
+    than the tree. Carried as one object so adapter methods keep a single
+    optional parameter instead of three, and stay callable without it.
+    """
+
+    raw: bytes
+    url: str
+    encoding: str | None = None
 
 
 def _clean(s: str) -> str:
@@ -190,7 +207,9 @@ class ItmayaAdapter(SiteAdapter):
         for du, cat_label in detail[:max_results]:
             try:
                 resp = net.get(du, check_robots=False, use_cache=True)
-                info = self._parse_product(_parse(resp.content, resp.declared_encoding))
+                info = self._parse_product(
+                    _parse(resp.content, resp.declared_encoding),
+                    _PageCtx(raw=resp.content, url=du, encoding=resp.declared_encoding))
             except net.FetchError:
                 info = {}
             title = info.get("model") or "Itmaya 서버"
@@ -220,11 +239,30 @@ class ItmayaAdapter(SiteAdapter):
         n = doc.xpath(f'//*[contains(concat(" ",normalize-space(@class)," ")," {cls} ")]')
         return _won(n[0].text_content()) if n else 0
 
-    def _parse_components(self, doc):
+    def _num_cls_adaptive(self, doc, cls: str, ctx: _PageCtx | None) -> int:
+        """``_num_cls``, but if the class name has stopped matching, ask the
+        adaptive layer to relocate the element it fingerprinted last time.
+
+        Only the scalar prices get this treatment. Relocation finds *an
+        element*; it cannot rebuild the component table's nested shape, so
+        pretending otherwise there would invent numbers rather than recover
+        them — and a wrong price is worse than a missing one.
+        """
+        val = self._num_cls(doc, cls)
+        if val or ctx is None:
+            return val
+        text = adaptive.first_text(ctx.raw, ctx.url, f".{cls}",
+                                   identifier=f"itmaya:{cls}", encoding=ctx.encoding)
+        if not text:
+            return 0
+        log.info("itmaya: relocated .%s adaptively on %s", cls, ctx.url)
+        return _won(text)
+
+    def _parse_components(self, doc, ctx: _PageCtx | None = None):
         """Return (base_start, base_top, groups) where groups is a list of
         (category, required, min, max, [(option_name, price_start, price_top)])."""
-        base_start = self._num_cls(doc, "price_system_start")
-        base_top = self._num_cls(doc, "price_system_top")
+        base_start = self._num_cls_adaptive(doc, "price_system_start", ctx)
+        base_top = self._num_cls_adaptive(doc, "price_system_top", ctx)
         groups = []
         for g in doc.xpath('//*[contains(concat(" ",normalize-space(@class)," ")," group_component ")]'):
             nm = g.xpath('./*[contains(concat(" ",normalize-space(@class)," ")," name ")]')
@@ -245,7 +283,7 @@ class ItmayaAdapter(SiteAdapter):
                                g.get("data-max"), opts))
         return base_start, base_top, groups
 
-    def _parse_product(self, doc) -> dict:
+    def _parse_product(self, doc, ctx: _PageCtx | None = None) -> dict:
         info: dict = {}
         # Model name (incl. the config variant, e.g. "…24Core, 128GB, RTX…").
         for xp in ('//div[contains(@class,"r_box_fixed")]//div[contains(@class,"title")]',
@@ -254,6 +292,12 @@ class ItmayaAdapter(SiteAdapter):
             if t:
                 info["model"] = _clean(t[0].text_content())
                 break
+        if not info.get("model") and ctx is not None:
+            alt = adaptive.first_text(ctx.raw, ctx.url, ".r_box_fixed .title",
+                                      identifier="itmaya:model", encoding=ctx.encoding)
+            if alt:
+                log.info("itmaya: relocated model title adaptively on %s", ctx.url)
+                info["model"] = _clean(alt)
         # Sales contact (a genuinely useful, stable field for a quote site).
         tel = doc.xpath('//*[contains(@class,"tel")]//*[contains(@class,"num")]')
         if tel:
@@ -268,7 +312,7 @@ class ItmayaAdapter(SiteAdapter):
                 summary[key] = _clean(dd[0].text_content())
         info["summary"] = summary
         # Base system price + itemised component price table.
-        bs, bt, comps = self._parse_components(doc)
+        bs, bt, comps = self._parse_components(doc, ctx)
         info["base_start"], info["base_top"], info["components"] = bs, bt, comps
         return info
 
@@ -288,7 +332,7 @@ class ItmayaAdapter(SiteAdapter):
             doc = _parse(raw, encoding)
         except Exception:  # noqa: BLE001
             return None
-        info = self._parse_product(doc)
+        info = self._parse_product(doc, _PageCtx(raw=raw, url=url, encoding=encoding))
         model = info.get("model") or "Itmaya 서버"
         summary = info.get("summary", {})
         tel = info.get("tel", "")

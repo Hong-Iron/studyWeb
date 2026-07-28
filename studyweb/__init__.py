@@ -16,6 +16,7 @@ respect, per-host rate limiting, and size/depth caps are all on by default.
 """
 
 from .config import Settings, settings
+from . import adaptive, engines
 from .search import search, SearchResult
 from .sitesearch import site_search, build_search_url
 from .fetch import fetch_page, fetch_many, Document
@@ -29,7 +30,7 @@ from .providers import PROVIDERS, chat, check, check_all, list_models, ProviderE
 from .agent import run_agent
 from .usage import Usage, ledger
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "search",
@@ -60,5 +61,7 @@ __all__ = [
     "chunk_text",
     "Settings",
     "settings",
+    "engines",
+    "adaptive",
     "__version__",
 ]
