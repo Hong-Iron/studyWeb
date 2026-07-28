@@ -1,11 +1,37 @@
 # studyweb — Improvements toward production
 
-Status: 219/220 tests pass (220/220 with the `scrapling` extra installed). The
+Status: 220/221 tests pass (221/221 with the `scrapling` extra installed). The
 engine is solid for local use; the items below are what stands between "works on
 my machine" and something you can publish, expose on a LAN, or run unattended.
 Ordered by priority.
 
 ## Shipped
+
+### 0.3.1 — the system prompt, rewritten for the models that actually run it
+
+The prompt was written the way you would brief a frontier model: dense prose,
+bare prohibitions, rules to infer routing from. What runs this stack is a 30–80B
+local in LM Studio, and that model fails in four specific ways the old shape
+walked straight into.
+
+- Routing is a table at the top, keyed on the question — these models fall back
+  to `web_search` whenever routing has to be inferred.
+- Every prohibition now carries the correct form beside it (`sites=["danawa.com"]`
+  next to the `site:` ban). A bare "never do X" gets inverted often enough to
+  matter.
+- `summary = null` has its own sentence to say, because the alternative a small
+  model reaches for is an invented number.
+- A stop rule: one retry, and it must change the approach, never the wording.
+  Rewording the same query in a loop was the observed failure.
+- Reasoning models were leaking their thinking into the answer; the prompt now
+  says so explicitly.
+- One line per rule under scannable headings, plus a shape to copy for a price
+  answer — small models follow a format far more reliably than a rule.
+
+Rolled through all four copies: `agent.py`, `docs/system-prompt.md`, the
+Obsidian plugin's mirror, and the LM Studio README's paste-in instructions.
+`tests/test_prompt.py` pins the new shape so it cannot be quietly reflowed back
+into paragraphs.
 
 ### 0.3.0 — pluggable fetch engines + self-healing selectors
 

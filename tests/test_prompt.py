@@ -39,3 +39,23 @@ def test_prompt_carries_the_rules_that_cost_us_answers():
                  "warnings",
                  "source URL"):
         assert rule in SYSTEM_PROMPT, f"the prompt no longer mentions {rule!r}"
+
+
+def test_prompt_keeps_the_shape_a_30b_model_needs():
+    """The layout is load-bearing for the models that actually run this.
+
+    A local 30-80B does not fail for lack of knowledge; it loses the middle of
+    long prose, inverts bare prohibitions, and falls back to web_search when
+    routing is ambiguous. Each pin below is the countermeasure, not decoration.
+    """
+    # Routing is a table read before anything else, not prose to infer from.
+    assert "WHICH TOOL" in SYSTEM_PROMPT
+    # Every prohibition ships with the correct form to copy instead.
+    assert 'sites=["danawa.com"]' in SYSTEM_PROMPT, (
+        "the site: rule lost its positive example — a bare 'never' gets inverted")
+    # The empty case has its own sentence, or the model invents a number.
+    assert "summary = null" in SYSTEM_PROMPT
+    # Without a stop rule these models reword the same query forever.
+    assert "Never repeat a call" in SYSTEM_PROMPT
+    # Reasoning models leak their thinking into the final answer.
+    assert "do not show your reasoning" in SYSTEM_PROMPT
