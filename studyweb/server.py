@@ -131,7 +131,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"status": "ok", "service": "studyweb",
                                     "version": __version__, "config": settings.as_dict()})
         if path in ("/tool-schema", "/tools"):
-            return self._send(200, {"tools": TOOL_SCHEMAS})
+            # The prompt ships with the schemas: a client that pulls the tools
+            # from here shouldn't have to carry its own stale copy of the rules
+            # for reading their results.
+            from .agent import SYSTEM_PROMPT
+            return self._send(200, {"tools": TOOL_SCHEMAS,
+                                    "system_prompt": SYSTEM_PROMPT})
         # Everything else requires auth (GET /search was previously unguarded).
         if not _auth_ok(self.headers, {}):
             return self._send(401, {"error": "invalid or missing api_key"})

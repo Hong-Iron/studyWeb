@@ -228,6 +228,17 @@ def cmd_ask(a) -> int:
     return 0
 
 
+def cmd_prompt(a) -> int:
+    """Print the system prompt, for pasting into a GUI that can't import it."""
+    from .agent import SYSTEM_PROMPT
+    from .lms import TOOL_SCHEMAS
+    if a.tools:
+        _print_json({"system_prompt": SYSTEM_PROMPT, "tools": TOOL_SCHEMAS})
+    else:
+        print(SYSTEM_PROMPT)
+    return 0
+
+
 def cmd_serve(a) -> int:
     serve(host=a.host, port=a.port)
     return 0
@@ -314,6 +325,12 @@ def build_parser() -> argparse.ArgumentParser:
     ak.add_argument("-v", "--verbose", action="store_true", help="print each tool call")
     ak.add_argument("--json", action="store_true")
     ak.set_defaults(func=cmd_ask)
+
+    pp = sub.add_parser("prompt", help="print the system prompt the agent runs with "
+                                       "(paste it into LM Studio / any OpenAI-style client)")
+    pp.add_argument("--tools", action="store_true",
+                    help="print it as JSON alongside the tool schemas")
+    pp.set_defaults(func=cmd_prompt)
 
     sv = sub.add_parser("serve", help="run the HTTP API")
     sv.add_argument("--host", default="127.0.0.1"); sv.add_argument("--port", type=int, default=8787)
