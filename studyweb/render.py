@@ -1,9 +1,9 @@
 """Headless-browser fallback for JS-rendered pages.
 
-Uses a **system Chrome/Chromium** binary in headless mode via ``subprocess``
-(``--dump-dom``), so it adds no Python dependency and keeps the library
-stdlib-only. If no browser is found (or rendering is disabled), the caller
-transparently falls back to the static fetch.
+The transport lives in :mod:`studyweb.engines` (the ``chrome`` engine, a system
+Chrome/Chromium driven via ``--dump-dom``, so no Python dependency is added).
+This module is the *guarded* entry point: it applies the same SSRF guard and
+robots.txt gate as the static fetcher before a browser is ever started.
 
     html = render.render_html("https://example.com")   # -> str | None
 """
@@ -11,34 +11,23 @@ transparently falls back to the static fetch.
 from __future__ import annotations
 
 import logging
-import os
-import shutil
-import subprocess
-import tempfile
 from urllib.parse import urlsplit
 
 from .config import settings
-from . import net, robots
+from . import engines, net, robots
 
 log = logging.getLogger("studyweb.render")
 
-_CHROME_NAMES = ("google-chrome-stable", "google-chrome", "chromium",
-                 "chromium-browser", "chrome", "brave-browser")
-
-
-def chrome_binary() -> str | None:
-    """Path to a usable Chrome/Chromium, or None if none is available."""
-    if settings.chrome_path:
-        return settings.chrome_path if os.path.exists(settings.chrome_path) else None
-    for name in _CHROME_NAMES:
-        p = shutil.which(name)
-        if p:
-            return p
-    return None
+# Re-exported so existing callers keep working after the engine refactor.
+chrome_binary = engines.chrome_binary
 
 
 def available() -> bool:
-    """True if the headless fallback can actually run."""
+    """True if the headless fallback can actually run.
+
+    Deliberately not delegated to the chrome engine: callers (and tests) patch
+    ``render.chrome_binary``, and that has to keep deciding the answer.
+    """
     return settings.render_enabled and chrome_binary() is not None
 
 
@@ -52,8 +41,7 @@ def render_html(url: str, *, timeout: float | None = None,
     """
     if not settings.render_enabled:
         return None
-    binary = chrome_binary()
-    if not binary:
+    if chrome_binary() is None:
         return None
 
     parts = urlsplit(url)
@@ -68,39 +56,4 @@ def render_html(url: str, *, timeout: float | None = None,
         log.info("render blocked by robots.txt: %s", url)
         return None
 
-    tmp = tempfile.mkdtemp(prefix="studyweb-chrome-")
-    args = [
-        binary,
-        "--headless=new",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--hide-scrollbars",
-        "--window-size=1920,1080",
-        f"--user-data-dir={tmp}",
-        f"--user-agent={settings.user_agent}",
-        f"--virtual-time-budget={wait_ms}",
-        "--dump-dom",
-        url,
-    ]
-    try:
-        proc = subprocess.run(
-            args, capture_output=True, timeout=timeout or settings.render_timeout,
-            text=True, errors="replace")
-        html = proc.stdout or ""
-        if len(html) < 40:  # empty/failed render
-            log.info("render produced no content for %s (rc=%s)", url, proc.returncode)
-            return None
-        return html
-    except subprocess.TimeoutExpired:
-        log.warning("render timed out for %s", url)
-        return None
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("render failed for %s: %s", url, exc)
-        return None
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    return engines.chrome_dump_dom(url, timeout=timeout, wait_ms=wait_ms)

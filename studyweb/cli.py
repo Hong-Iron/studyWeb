@@ -66,7 +66,7 @@ def cmd_prices(a) -> int:
 
 
 def cmd_fetch(a) -> int:
-    d = fetch_page(a.url)
+    d = fetch_page(a.url, engine=a.engine)
     if not d.ok:
         print(f"error: {d.error or d.status}", file=sys.stderr)
         return 1
@@ -74,7 +74,10 @@ def cmd_fetch(a) -> int:
         _print_json(d.to_dict(include_links=a.links))
     else:
         body = d.text if a.text else d.markdown
-        print(f"# {d.title}\n(source: {d.url}, {d.word_count} words)\n\n{body}")
+        via = d.meta.get("fetch_engine") or "?"
+        if d.meta.get("escalated_from"):
+            via = f"{d.meta['escalated_from']} -> {via}"
+        print(f"# {d.title}\n(source: {d.url}, {d.word_count} words, via {via})\n\n{body}")
     return 0
 
 
@@ -146,6 +149,39 @@ def cmd_providers(a) -> int:
     print("\n* = default provider (STUDYWEB_PROVIDER_LLM). "
           "Keys come from each provider's env var.")
     return 0 if all(r["status"] in ("ok", "no_key") for r in rows) else 1
+
+
+def cmd_engines(a) -> int:
+    """Show which fetch transports this machine can actually reach for.
+
+    Worth a command of its own because an unavailable engine is otherwise
+    invisible: the ladder just skips it and pages quietly come back thin.
+    """
+    from . import adaptive, engines
+
+    rows = engines.status()
+    if a.json:
+        _print_json({"engines": rows, "adaptive": adaptive.status(),
+                     "start": settings.fetch_engine,
+                     "ladder": list(settings.fetch_ladder),
+                     "escalate": settings.fetch_escalate})
+        return 0
+    chain = [e.name for e in engines.ladder()]
+    print(f"{'':2} {'ENGINE':<12} {'TIER':<5} {'COST':<9} DETAIL")
+    for r in rows:
+        mark = "✓" if r["available"] else "×"
+        star = "*" if r["name"] == settings.fetch_engine else " "
+        cost = "browser" if r["heavy"] else "cheap"
+        print(f"{star}{mark} {r['name']:<12} {r['tier']:<5} {cost:<9} {r['reason']}")
+    print(f"\nescalation path: {' -> '.join(chain) if chain else '(none available)'}"
+          f"{'' if settings.fetch_escalate else '  [escalation OFF]'}")
+    ad = adaptive.status()
+    state = ("on" if ad["enabled"] and ad["available"]
+             else "unavailable (needs scrapling)" if ad["enabled"] else "off")
+    print(f"adaptive selectors: {state}")
+    print("\n* = starting engine (STUDYWEB_ENGINE). "
+          'Stronger engines need: pip install "studyweb[scrapling]"')
+    return 0
 
 
 def _fmt_cost(bucket: dict) -> str:
@@ -268,6 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("fetch", help="fetch & clean one page")
     f.add_argument("url"); f.add_argument("--text", action="store_true")
     f.add_argument("--links", action="store_true"); f.add_argument("--json", action="store_true")
+    f.add_argument("--engine", default=None,
+                   help="force a transport: static|scrapling|chrome|dynamic|stealth "
+                        "(default: start at STUDYWEB_ENGINE and escalate as needed)")
     f.set_defaults(func=cmd_fetch)
 
     an = sub.add_parser("answer", help="search + local answer (Tavily-style)")
@@ -301,6 +340,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="skip providers with no API key instead of dialling them")
     pv.add_argument("--json", action="store_true")
     pv.set_defaults(func=cmd_providers)
+
+    en = sub.add_parser("engines", help="fetch transports available here + the escalation path")
+    en.add_argument("--json", action="store_true")
+    en.set_defaults(func=cmd_engines)
 
     us = sub.add_parser("usage", help="token/cost usage for local and cloud models")
     us.add_argument("--days", type=int, default=7)

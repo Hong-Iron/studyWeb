@@ -40,7 +40,18 @@ pip install .
 pip install -r requirements.txt
 ```
 
-Requires Python ≥ 3.10.
+Requires Python ≥ 3.10. The whole install is **`requests` + `lxml`** — small
+enough to sit on a server as a always-on backend.
+
+Optionally, stronger fetch transports and self-healing selectors:
+
+```bash
+pip install ".[scrapling]" && scrapling install   # downloads the browsers
+```
+
+That pulls in [Scrapling](https://github.com/D4Vinci/Scrapling) and is worth it
+for JS-heavy or bot-hostile sites — see [Fetch engines](#fetch-engines). Without
+it every code path still works; the engine ladder just has one rung.
 
 ---
 
@@ -426,10 +437,51 @@ as `site_search(site, query)`. Works best on server-rendered pages.
 
 ---
 
+## Fetch engines
+
+The transport is pluggable; the politeness layer is not. `robots.txt`, the SSRF
+guard, per-host throttling, the size cap and the cache all live in `net.get()`
+and wrap **every** engine, so a stronger backend never costs safety.
+
+| Engine | Tier | What it adds | Needs |
+|---|---|---|---|
+| `static` | 0 | plain `requests` + a browser UA | — (default) |
+| `scrapling` | 1 | TLS/JA3 fingerprint impersonation | `studyweb[scrapling]` |
+| `chrome` | 2 | runs JavaScript (system Chrome `--dump-dom`) | a Chrome/Chromium binary |
+| `dynamic` | 3 | a real Playwright browser | `studyweb[scrapling]` |
+| `stealth` | 4 | anti-bot fingerprint spoofing | `studyweb[scrapling]` + opt-in |
+
+Fetches start at `static` and climb only when a page forces it — on an anti-bot
+wall (`net.get`) or on a body so empty it must be a JS shell (`fetch_page`).
+Unavailable rungs are skipped, so on a bare two-dependency install the ladder
+collapses to `[static]` and nothing changes.
+
+```bash
+studyweb engines                      # what this box can reach for
+studyweb fetch <url> --engine chrome  # force one
+pip install "studyweb[scrapling]" && scrapling install   # unlock the rest
+```
+
+`stealth` is never on the default ladder. It exists so a site you are *allowed*
+to read stops rejecting you for looking like a script — the robots.txt gate
+still runs first, whichever engine is chosen. Turning on
+`STUDYWEB_SOLVE_CLOUDFLARE` goes a step further and is yours to justify.
+
+Site adapters additionally get **self-healing selectors** (`STUDYWEB_ADAPTIVE`):
+when a hardcoded class name like Itmaya's `.price_system_start` stops matching,
+the element is relocated by similarity from a fingerprint saved on an earlier
+run instead of silently reading zero. Scalar fields only — relocation finds an
+element, and pretending it can rebuild a nested price table would invent numbers
+rather than recover them.
+
+---
+
 ## Good-web-citizen defaults
 
-- Honours `robots.txt` (toggle with `STUDYWEB_RESPECT_ROBOTS`)
-- Per-host rate limiting (`STUDYWEB_PER_HOST_DELAY`, default 1 req/s)
+- Honours `robots.txt` (toggle with `STUDYWEB_RESPECT_ROBOTS`) — before any
+  engine is selected, including the stealth one
+- Per-host rate limiting (`STUDYWEB_PER_HOST_DELAY`, default 1 req/s), applied
+  around every engine so a backend's own retry loop can't multiply against ours
 - Response size caps, request timeouts, and retry-with-backoff
 - On-disk response cache to avoid re-fetching
 
@@ -443,11 +495,14 @@ See [`.env.example`](./.env.example) for the full list of configuration knobs.
 
 ## Limitations (be honest about these)
 
-- **No JavaScript execution.** Pages that render prices/content purely client-side
-  (many SPA storefronts, e.g. Samsung's product pages) expose little in their raw
-  HTML. Server-rendered pages (e.g. Danawa product listings) work well.
-- **Some sites block scraping** (Cloudflare "Just a moment…", hard 403s). `studyweb`
-  routes around them via other search results rather than defeating the protection.
+- **JavaScript costs a browser.** The `static` default reads raw HTML only; SPA
+  storefronts that render prices client-side need the `chrome` or `dynamic`
+  engine, which escalation reaches automatically when a page comes back empty.
+  Server-rendered pages (e.g. Danawa product listings) never pay that cost.
+- **Some sites block scraping** (Cloudflare "Just a moment…", hard 403s). Escalation
+  will try a browser-shaped fingerprint, but `studyweb` still prefers routing around
+  a wall via other search results to defeating the protection, and never touches a
+  path robots.txt disallows.
 - **The built-in answer is extractive** (BM25 sentence selection), not LLM-synthesised.
   It's fully local and source-grounded; for prose answers, feed the `results` to your
   own LLM (that's exactly what the LM Studio integration does).

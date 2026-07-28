@@ -66,6 +66,46 @@ class Settings:
     # Set true for intranet use where you deliberately fetch internal addresses.
     allow_private_hosts: bool = field(default_factory=lambda: _env_bool("STUDYWEB_ALLOW_PRIVATE", False))
 
+    # ---- Fetch engines (see studyweb.engines) ------------------------------
+    # Which transport a fetch starts on. "static" is plain requests and needs
+    # nothing installed; the rest cost either a browser process or the optional
+    # Scrapling dependency, so they are reached by escalation, not by default.
+    fetch_engine: str = field(default_factory=lambda: os.environ.get("STUDYWEB_ENGINE", "static"))
+    # Escalate to a stronger engine when a page comes back blocked or thin.
+    fetch_escalate: bool = field(default_factory=lambda: _env_bool("STUDYWEB_ESCALATE", True))
+    # Word count below which a 200 response is treated as a JS shell worth
+    # re-fetching with a browser. Much stricter than render_thin_threshold
+    # because this gates every fetch, not just explicit data extraction — a
+    # short page is not a broken one.
+    escalate_thin_words: int = field(
+        default_factory=lambda: _env_int("STUDYWEB_ESCALATE_THIN_WORDS", 50))
+    # The escalation path, weakest first. Unavailable entries are skipped, so
+    # this same default collapses to just "static" on a bare install.
+    fetch_ladder: tuple = field(default_factory=lambda: tuple(
+        e.strip().lower() for e in os.environ.get(
+            "STUDYWEB_FETCH_LADDER", "static,scrapling,chrome,dynamic").split(",")
+        if e.strip()))
+    # Browser whose TLS/JA3 fingerprint the Scrapling engine impersonates.
+    scrapling_impersonate: str = field(
+        default_factory=lambda: os.environ.get("STUDYWEB_IMPERSONATE", "chrome"))
+    # Anti-bot fingerprint spoofing. Off by default and never on the default
+    # ladder — the robots.txt gate still runs first either way, so this only
+    # changes how studyweb looks to a site that already allows the path.
+    stealth_enabled: bool = field(default_factory=lambda: _env_bool("STUDYWEB_STEALTH", False))
+    # Cloudflare Turnstile solving inside the stealth engine. A deliberate step
+    # beyond looking like a browser; enable only where you have standing to.
+    solve_cloudflare: bool = field(
+        default_factory=lambda: _env_bool("STUDYWEB_SOLVE_CLOUDFLARE", False))
+
+    # ---- Self-healing selectors (see studyweb.adaptive) --------------------
+    # Let site adapters relocate an element by similarity when their hardcoded
+    # class names stop matching. On by default because it costs nothing without
+    # the optional Scrapling dependency — it simply does not engage.
+    adaptive_selectors: bool = field(default_factory=lambda: _env_bool("STUDYWEB_ADAPTIVE", True))
+    # Minimum similarity (%) before a relocated element is accepted. Lower finds
+    # more after a redesign; too low starts matching the wrong element.
+    adaptive_percentage: int = field(default_factory=lambda: _env_int("STUDYWEB_ADAPTIVE_PCT", 80))
+
     # ---- Search backends ---------------------------------------------------
     # "auto" tries free providers (bing, wikipedia) then any key-based ones.
     default_provider: str = field(default_factory=lambda: os.environ.get("STUDYWEB_PROVIDER", "auto"))

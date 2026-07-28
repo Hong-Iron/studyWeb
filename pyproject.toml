@@ -25,6 +25,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Stronger fetch transports (TLS-fingerprint impersonation, a real browser,
+# anti-bot fingerprint spoofing) plus self-healing selectors for site adapters.
+# Deliberately optional: studyweb's whole install is requests + lxml, and the
+# engine ladder degrades to plain `static` when this is absent. Needs a one-off
+# `scrapling install` afterwards to download the browsers.
+scrapling = ["scrapling[fetchers]>=0.4"]
+all = ["scrapling[fetchers]>=0.4"]
 
 [project.scripts]
 studyweb = "studyweb.cli:main"
