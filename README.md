@@ -468,6 +468,24 @@ pip install "scrapling[fetchers]" && scrapling install   # anywhere
 pipx inject studyweb "scrapling[fetchers]" --include-apps  # if installed via pipx
 ```
 
+**On a non-Debian distro `scrapling install` ends in a traceback, and that is
+mostly fine.** Its last step is `playwright install-deps`, which shells out to
+`apt-get`; on Arch, Fedora or Alpine there is no `apt-get` and the command dies.
+The browser download is the step *before* it, so by then Chromium is already in
+place — check with `studyweb engines` rather than believing the traceback. Two
+things the crash does skip: the `tld` suffix list, and the marker file that
+stops the command re-running. Finish them by hand:
+
+```bash
+python -c "from tld.utils import update_tld_names; update_tld_names(fail_silently=True)"
+touch "$(python -c 'import scrapling,pathlib;print(pathlib.Path(scrapling.__file__).parent)')/.scrapling_dependencies_installed"
+```
+
+Playwright's Chromium runs unpatched on Arch — `ldd` on the bundled binary
+resolves everything — so the skipped `install-deps` costs nothing there. If a
+browser engine does fail to launch on some other distro, that is the step to
+replace with your package manager's equivalent, not a reason to reinstall.
+
 `stealth` is never on the default ladder. It exists so a site you are *allowed*
 to read stops rejecting you for looking like a script — the robots.txt gate
 still runs first, whichever engine is chosen. Turning on
