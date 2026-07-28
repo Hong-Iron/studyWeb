@@ -11,10 +11,9 @@ engine answers exactly one question: given a URL, what bytes come back?
     dynamic    Scrapling ``DynamicFetcher``      real Playwright browser
     stealth    Scrapling ``StealthyFetcher``     anti-bot fingerprint spoofing
 
-The Scrapling-backed engines need ``pip install "studyweb[scrapling]"``. Without
-it they report themselves unavailable and the escalation ladder simply skips
-them — nothing else in studyweb changes, and the two-dependency install stays
-the default.
+The Scrapling-backed engines need :data:`INSTALL_HINT`. Without it they report
+themselves unavailable and the escalation ladder simply skips them — nothing
+else in studyweb changes, and the two-dependency install stays the default.
 
 Engines are ordered by ``tier``: cost and intrusiveness both rise with it, so
 :func:`ladder` walks upward only as far as a page actually forces it.
@@ -38,6 +37,16 @@ from typing import Callable
 from .config import settings
 
 log = logging.getLogger("studyweb.engines")
+
+# How to unlock the Scrapling-backed engines, in a form that works wherever this
+# message is printed. studyweb is not published to PyPI, so `pip install
+# "studyweb[scrapling]"` cannot resolve — the extra exists only in a source
+# checkout's metadata, and a hint shown on an unknown machine cannot assume one
+# is present. Installing the dependency directly is equivalent and always works.
+INSTALL_HINT = 'pip install "scrapling[fetchers]" && scrapling install'
+
+# The same thing from a checkout of this repo, where the extra does resolve.
+INSTALL_HINT_SOURCE = 'pip install ".[scrapling]" && scrapling install'
 
 
 class EngineError(Exception):
@@ -322,7 +331,7 @@ class ScraplingEngine(Engine):
 
     def available(self) -> bool:
         if not scrapling_available():
-            self.why_unavailable = 'install with: pip install "studyweb[scrapling]"'
+            self.why_unavailable = "needs the scrapling extra"
             return False
         return True
 
@@ -375,7 +384,7 @@ class DynamicEngine(Engine):
             self.why_unavailable = "STUDYWEB_RENDER is off"
             return False
         if _scrapling_fetcher(self._fetcher_name) is None:
-            self.why_unavailable = 'install with: pip install "studyweb[scrapling]"'
+            self.why_unavailable = "needs the scrapling extra"
             return False
         return True
 

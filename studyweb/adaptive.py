@@ -69,8 +69,9 @@ def _warn_once() -> None:
     with _lock:
         if not _warned:
             _warned = True
+            from .engines import INSTALL_HINT
             log.info("adaptive selectors requested but scrapling is not "
-                     'installed; install with: pip install "studyweb[scrapling]"')
+                     "installed; install with: %s", INSTALL_HINT)
 
 
 def parse(html: bytes | str, url: str, encoding: str | None = None):

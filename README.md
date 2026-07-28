@@ -446,10 +446,10 @@ and wrap **every** engine, so a stronger backend never costs safety.
 | Engine | Tier | What it adds | Needs |
 |---|---|---|---|
 | `static` | 0 | plain `requests` + a browser UA | — (default) |
-| `scrapling` | 1 | TLS/JA3 fingerprint impersonation | `studyweb[scrapling]` |
+| `scrapling` | 1 | TLS/JA3 fingerprint impersonation | the `scrapling` extra |
 | `chrome` | 2 | runs JavaScript (system Chrome `--dump-dom`) | a Chrome/Chromium binary |
-| `dynamic` | 3 | a real Playwright browser | `studyweb[scrapling]` |
-| `stealth` | 4 | anti-bot fingerprint spoofing | `studyweb[scrapling]` + opt-in |
+| `dynamic` | 3 | a real Playwright browser | the `scrapling` extra |
+| `stealth` | 4 | anti-bot fingerprint spoofing | the `scrapling` extra + opt-in |
 
 Fetches start at `static` and climb only when a page forces it — on an anti-bot
 wall (`net.get`) or on a body so empty it must be a JS shell (`fetch_page`).
@@ -459,7 +459,13 @@ collapses to `[static]` and nothing changes.
 ```bash
 studyweb engines                      # what this box can reach for
 studyweb fetch <url> --engine chrome  # force one
-pip install "studyweb[scrapling]" && scrapling install   # unlock the rest
+
+# Unlock the rest. studyweb is not on PyPI, so name the extra against a
+# checkout of this repo — or install the dependency directly, which works
+# from anywhere and is the same thing:
+pip install ".[scrapling]" && scrapling install    # from this directory
+pip install "scrapling[fetchers]" && scrapling install   # anywhere
+pipx inject studyweb "scrapling[fetchers]" --include-apps  # if installed via pipx
 ```
 
 `stealth` is never on the default ladder. It exists so a site you are *allowed*

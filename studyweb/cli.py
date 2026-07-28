@@ -179,8 +179,10 @@ def cmd_engines(a) -> int:
     state = ("on" if ad["enabled"] and ad["available"]
              else "unavailable (needs scrapling)" if ad["enabled"] else "off")
     print(f"adaptive selectors: {state}")
-    print("\n* = starting engine (STUDYWEB_ENGINE). "
-          'Stronger engines need: pip install "studyweb[scrapling]"')
+    print("\n* = starting engine (STUDYWEB_ENGINE).")
+    if any(not r["available"] for r in rows):
+        print(f"stronger engines: {engines.INSTALL_HINT}"
+              f"\n  (from a checkout of this repo: {engines.INSTALL_HINT_SOURCE})")
     return 0
 
 

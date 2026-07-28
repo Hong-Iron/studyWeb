@@ -67,6 +67,17 @@ def test_stealth_is_off_by_default(monkeypatch):
     assert "STUDYWEB_STEALTH" in eng.why_unavailable
 
 
+def test_install_hint_is_runnable_off_a_checkout():
+    """The hint is printed on machines that may have no source tree.
+
+    studyweb is not on PyPI, so `pip install "studyweb[scrapling]"` fails to
+    resolve — naming the dependency is the form that works from anywhere.
+    """
+    assert "studyweb[" not in engines.INSTALL_HINT
+    assert "scrapling[fetchers]" in engines.INSTALL_HINT
+    assert ".[scrapling]" in engines.INSTALL_HINT_SOURCE
+
+
 def test_stealth_never_on_the_default_ladder():
     """Opting into stealth must stay an explicit act, not a fallback."""
     default = "static,scrapling,chrome,dynamic"
