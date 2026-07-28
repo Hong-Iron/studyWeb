@@ -77,6 +77,7 @@ python -m studyweb serve --port 8787                       # HTTP API
 
 python -m studyweb providers                # who's connected right now
 python -m studyweb ask "GPU prices" --provider anthropic   # model + web tools
+python -m studyweb prompt                   # the system prompt, to paste into a GUI
 python -m studyweb usage                    # tokens and cost so far
 python -m studyweb pricing --write          # export prices to edit
 ```
@@ -141,10 +142,18 @@ live web, and the results are fed back until the model produces its answer. You
 can also grab the raw schemas with `from studyweb.lms import TOOL_SCHEMAS,
 dispatch_tool` and wire them into any OpenAI-style client yourself.
 
-**[`docs/llm-guide.md`](./docs/llm-guide.md) is written for the model**, not for
-you: which tool answers which question, how to phrase arguments, and what to do
-when one comes back empty. Paste it into a system prompt, or hand it to a model
-that keeps reaching for `web_search` with `site:` operators.
+**Two documents are written for the model**, not for you:
+
+- **[`docs/system-prompt.md`](./docs/system-prompt.md)** — the prompt the agent
+  already runs with (`studyweb.agent.SYSTEM_PROMPT`, also returned by
+  `GET /tool-schema`). Copy it into LM Studio's *System Prompt* box, or any
+  OpenAI-style client you wire the schemas into yourself, so a model there
+  behaves the way `studyweb ask` does.
+- **[`docs/llm-guide.md`](./docs/llm-guide.md)** — the long form of the same
+  rules with worked examples: which tool answers which question, how to phrase
+  arguments, what each `method` and `misses` reason means, and what to do when a
+  tool comes back empty. Hand it to a model that keeps reaching for `web_search`
+  with `site:` operators.
 
 ### 5. Cloud models (OpenAI · Claude · NVIDIA NIM · Claude Code)
 

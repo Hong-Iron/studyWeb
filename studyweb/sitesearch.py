@@ -95,6 +95,25 @@ def _registry_key(site_norm: str) -> str | None:
     return None
 
 
+def sibling_site(site: str) -> str | None:
+    """A registered domain that is plainly the same shop under another TLD.
+
+    For use only *after* the typed domain came back empty. compuzone.com is a
+    live host that answers every request with 403, while the shop everyone means
+    is compuzone.co.kr — and a model asked about "컴퓨존" has no way to know
+    which TLD is the real one. Returns None when the typed domain is registered
+    (nothing to recover) or when its label matches more than one registered
+    domain, so a genuine sibling like amazon.co.uk — which searches perfectly
+    well on its own — is never quietly turned into amazon.com.
+    """
+    norm = _norm_site(site)
+    if _registry_key(norm):
+        return None
+    label = norm.split(".", 1)[0]
+    same = [d for d in SITES if d.split(".", 1)[0] == label]
+    return same[0] if len(same) == 1 else None
+
+
 def _canon(url: str) -> str:
     """Canonical key for de-duplication. Product/result pages are keyed by their
     numeric id param(s) (pcode, cate, itemId, …) so cosmetic deep-links to the
