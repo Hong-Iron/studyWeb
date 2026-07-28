@@ -5,6 +5,10 @@ is written to *you*, the model. It tells you which tool answers which question,
 how to phrase the arguments, what the results mean, and what to do when a tool
 comes back empty.
 
+(If you are setting a model up rather than reading this as one: the condensed,
+paste-into-a-GUI version of these rules is
+[`system-prompt.md`](./system-prompt.md) — the same text the agent already uses.)
+
 The short version, if you only read one section:
 
 > Use `find_prices` for "how much does X cost". Use `web_search` for general
@@ -86,7 +90,8 @@ Returns:
   page. No number here is a guess or an estimate.
 - `quotes` follows each site's own ranking, so a query for a *part* can bring
   back whole machines that contain it — that is why `max` above is 1,869,990원
-  for a CPU. **Check the titles before quoting `summary.max` or `median`.**
+  for a CPU. **Do not report `summary.max` or `summary.median` at all** unless
+  you have checked that every quote is the same product; they almost never are.
   `min`, `by_site` and the individual quotes are the figures worth reporting.
 - Prices are what the site listed at that moment, before shipping, options and
   card discounts. Report them as such; do not call one "the cheapest in Korea".
@@ -116,6 +121,7 @@ may be on a site that failed. The reasons are not interchangeable:
 | `no results — the site's search page returned nothing to a static fetch` | The shop builds its results with JavaScript; there was nothing to read | "이 사이트는 조회하지 못했습니다" — the product may well be there |
 | `N page(s) found, none priced — blocked by robots.txt` | studyweb found the products but the site's robots.txt forbids fetching them | Say it was **blocked**, not that there is no price. A human can open it |
 | `N page(s) found, none priced — no price in the page` | The pages loaded but published no price anywhere readable | The price is probably behind a login, an option picker, or "가격 문의" |
+| `N result(s) found, all for other products — the site answered with ads, not this model` | The shop returned only sponsored rows for different models (a 7500F for a 9600X query); they were dropped rather than priced | The shop was searched but does not answer for this model — say that, don't retry the same query |
 | A site simply absent from both `quotes` and `misses` | It was not in the list at all | Check whether the user named it; pass it in `sites` |
 
 ### `sites` — naming shops yourself
@@ -131,6 +137,11 @@ homepage, so an ordinary server-rendered shop usually just works.
 When the user names a shop, put it in `sites` — do not write "컴퓨존에서" into
 the query, and do not fall back to `web_search`. If that shop comes back as a
 miss, §5 says what to do next.
+
+You do not have to get the TLD right. A shop studyweb knows under another domain
+is retried automatically (`compuzone.com` → `compuzone.co.kr`), so guess the
+obvious domain and read the quote's `site` field to see which one answered — it
+is the one to name in your answer.
 
 ## 4. The other tools
 

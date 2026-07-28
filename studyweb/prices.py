@@ -87,6 +87,81 @@ def price_from_field(v) -> int | None:
     return _as_won(m.group(0)) if m else None
 
 
+# A search-results row is not prose: it is the whole card flattened into one
+# string, so several numbers live in it and the first one is usually wrong.
+# Coupang's row reads "369,000원29%259,000원배송비 2,500원…" — the list price
+# struck through, the discount, the price you actually pay, then the shipping.
+_DISCOUNTED = re.compile(r"\d{1,2}\s*%\s*$")     # "…29%" right before the number
+# Korean labels sit on one side of their amount and not the other: "배송비
+# 2,500원" leads, "8,967원 적립" trails. Checking both sides for both words
+# would throw away the sale price in "259,000원배송비 2,500원", where 배송비
+# belongs to the number *after* it.
+_LABEL_BEFORE = ("배송비", "쿠폰", "포인트", "마일리지", "적립")
+_LABEL_AFTER = ("적립", "쿠폰", "포인트", "마일리지")
+
+
+def price_from_listing(s: str | None) -> int | None:
+    """Pull the price a shopper would pay out of one search-result row.
+
+    Prefers the number that follows a discount percentage over the struck-through
+    one before it, and skips the amounts the row quotes for something other than
+    the product (shipping, points, coupons).
+    """
+    if not s:
+        return None
+    first: int | None = None
+    for m in _WON.finditer(s):
+        n = _as_won(m.group(1) or m.group(2))
+        if n is None:
+            continue
+        before, after = s[max(0, m.start() - 8):m.start()], s[m.end():m.end() + 4]
+        if any(w in before for w in _LABEL_BEFORE) or any(w in after for w in _LABEL_AFTER):
+            continue
+        if _DISCOUNTED.search(before):
+            return n
+        if first is None:
+            first = n
+    return first
+
+
+# Model codes, for telling "the row we asked for" from the ad next to it.
+# Three digits is the threshold that keeps 9600X, 7500F and 5080 while leaving
+# out the counts and dates a row is full of ("(11)", "7/31").
+_MODEL_CODE = re.compile(r"[a-z0-9]*\d{3,}[a-z0-9]*")
+_ROW_NOISE = re.compile(r"[0-9][0-9,]*\s*(?:원|KRW)|\d+\s*%|\d+/\d+")
+
+
+def model_codes(s: str) -> set[str]:
+    """The model codes in a title, with prices, discounts and dates removed
+    first — otherwise "216,080원" reads as the model numbers 216 and 080."""
+    return set(_MODEL_CODE.findall(_ROW_NOISE.sub(" ", (s or "").lower())))
+
+
+def names_another_product(title: str, query: str) -> bool:
+    """True when the row is plainly about a *different* model than the query.
+
+    Shopping sites pad their results with ads: a search for 9600X returns rows
+    for the 7500F and the 5600. Those carry real prices, so nothing downstream
+    can tell they are the wrong product — and one of them becomes the minimum.
+    A row that names no model at all (danawa's rows are literally "265,000원")
+    is left alone; only a stated, conflicting model is grounds for dropping it.
+    """
+    want, got = model_codes(query), model_codes(title)
+    return bool(want and got and not (want & got))
+
+
+# A shop that walls off its product pages still returns 200 with a title like
+# "Access Denied" — which then becomes the quote's name, hiding the fact that
+# nothing about the product was verified.
+_BLOCK_PAGE = re.compile(
+    r"access denied|forbidden|attention required|just a moment|are you a robot|"
+    r"page not found|error \d{3}|접근이 (?:거부|차단)|잘못된 (?:접근|요청)", re.I)
+
+
+def _looks_blocked(name: str) -> bool:
+    return bool(name) and len(name) <= 60 and bool(_BLOCK_PAGE.search(name))
+
+
 # --------------------------------------------------------------------------- #
 #  Reading a price off the page itself                                         #
 # --------------------------------------------------------------------------- #
@@ -224,10 +299,13 @@ def _quote(site: str, r) -> tuple[Quote, str]:
     if price is None:
         # Listing pages often show the price and nothing else useful; danawa's
         # result rows are literally "265,000원".
-        price = price_from_text(r.title) or price_from_text(r.snippet)
+        price = price_from_listing(r.title) or price_from_listing(r.snippet)
         if price is not None:
             method, problem = "listing", ""
-    return Quote(site=site, title=(read.name or r.title).strip(), url=r.url,
+    # The page's own name is better than the row's — unless the "page" was the
+    # shop's bot wall, whose title says nothing about what we just priced.
+    name = "" if _looks_blocked(read.name) else read.name
+    return Quote(site=site, title=(name or r.title).strip(), url=r.url,
                  price=price, method=method, brand=read.brand,
                  snippet=r.snippet), problem
 
@@ -253,6 +331,13 @@ def _site_quotes(site: str, query: str, per_site: int) -> tuple[list[Quote], str
         if use_naver_api:
             return _naver_quotes(query, per_site), ""
         results = sitesearch.site_search(site, query, max_results=per_site)
+        if not results:
+            # A shop named in a question arrives as a guess at its domain, and
+            # the guess is usually the .com. Try the one we know sells things.
+            alt = sitesearch.sibling_site(site)
+            if alt and (found := sitesearch.site_search(alt, query, max_results=per_site)):
+                log.info("%s returned nothing; %s answered instead", site, alt)
+                results, site = found, alt
     except Exception as exc:  # noqa: BLE001 — report per site, keep the others
         return [], f"{type(exc).__name__}: {exc}"
     if not results:
@@ -263,6 +348,17 @@ def _site_quotes(site: str, query: str, per_site: int) -> tuple[list[Quote], str
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         read = list(pool.map(lambda r: _quote(site, r), results))
     priced = [q for q, _ in read if q.price is not None]
+    # An unverified row that names a different model is an ad, not an offer.
+    # (A page we actually read is left in: a PC *containing* the 9600X is a real
+    # answer to the site's own ranking, and the caller is told to check titles.)
+    kept = [q for q in priced
+            if not (q.method == "listing" and names_another_product(q.title, query))]
+    if len(kept) < len(priced):
+        log.debug("%s: dropped %d row(s) for another model", site, len(priced) - len(kept))
+        if not kept:
+            return [], (f"{len(priced)} result(s) found, all for other products — "
+                        "the site answered with ads, not this model")
+    priced = kept
     if not priced:
         # Say *why*. "none published a price" and "every page was blocked by
         # robots.txt" call for completely different fixes.

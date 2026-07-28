@@ -15,6 +15,10 @@ JSONLD = """<html><head><script type="application/ld+json">
 
 BARE = "<html><body><p>가격 정보 없음</p></body></html>"
 
+# Coupang answers a bot with 200 OK and this, so nothing about the product is
+# verified — but the row that led here still carries a price.
+DENIED = "<html><head><title>Access Denied</title></head><body>Access Denied</body></html>"
+
 # Compuzone in miniature: no markup at all, a decoy price hidden behind
 # display:none with the real digits sitting in its *tail*, and an unlabelled
 # promo banner earlier in the document.
@@ -144,6 +148,85 @@ def test_listing_price_is_the_fallback_when_a_page_has_no_markup(monkeypatch):
           pages={"https://d/2": BARE})
     [q] = prices.find_prices("9600X", sites=["danawa.com"])["quotes"]
     assert q["price"] == 265000 and q["method"] == "listing"
+
+
+# --- a search-results row, which is a whole card flattened into one string ---
+# Verbatim shapes from coupang.com's rows for "AMD 라이젠5 9600X".
+
+COUPANG_ROW = ("AMD 라이젠5-6세대 9600X (그래니트 릿지) (멀티팩(정품)) "
+               "(369,000원29%259,000원배송비 2,500원내일(수) 도착 예정")
+COUPANG_AD = ("AMD 라이젠 5 7500F CPU, 옵션1할인216,080원17%179,340원홍콩"
+              "7/31(금) 도착 예정무료배송(11)최대 8,967원 적립광고")
+
+
+@pytest.mark.parametrize("row,expected", [
+    (COUPANG_ROW, 259000),          # the sale price, not the struck-through one
+    (COUPANG_AD, 179340),
+    ("265,000원", 265000),          # danawa: one number, nothing to choose from
+    ("배송비 2,500원", None),        # shipping is not what the product costs
+    ("최대 8,967원 적립", None),     # nor are the points it earns
+    ("무료배송", None),
+])
+def test_a_listing_row_yields_the_price_you_would_pay(row, expected):
+    assert prices.price_from_listing(row) == expected
+
+
+@pytest.mark.parametrize("title,other", [
+    (COUPANG_AD, True),                              # a 7500F ad answering 9600X
+    ("AMD 라이젠 5 5600 CPU187,370원", True),
+    (COUPANG_ROW, False),                            # names the model we asked for
+    ("265,000원", False),                            # names no model at all
+    ("포유컴퓨터 퍼포먼스PC 36 R5 9600X RTX5060", False),   # a PC *containing* it
+])
+def test_a_row_for_another_model_is_recognisable(title, other):
+    assert prices.names_another_product(title, "AMD 라이젠5 9600X") is other
+
+
+def test_ad_rows_for_other_models_never_become_the_minimum(monkeypatch):
+    # What actually happened on coupang: the page fetch is walled off, so both
+    # rows fall back to their listing price — and the ad's is the lower one.
+    _wire(monkeypatch,
+          hits={"coupang.com": [SearchResult(COUPANG_ROW, "https://c/1"),
+                                SearchResult(COUPANG_AD, "https://c/2")]},
+          pages={"https://c/1": DENIED, "https://c/2": DENIED})
+    out = prices.find_prices("AMD 라이젠5 9600X", sites=["coupang.com"])
+    assert [q["price"] for q in out["quotes"]] == [259000]
+    assert out["summary"]["min"] == 259000
+    # and the bot wall's title never passes for the product's name
+    assert "Access Denied" not in out["quotes"][0]["title"]
+
+
+def test_a_site_that_only_returns_ads_is_a_miss_that_says_so(monkeypatch):
+    _wire(monkeypatch,
+          hits={"coupang.com": [SearchResult(COUPANG_AD, "https://c/2")]},
+          pages={"https://c/2": DENIED})
+    out = prices.find_prices("AMD 라이젠5 9600X", sites=["coupang.com"])
+    assert out["quotes"] == [] and out["summary"] is None
+    assert "other products" in out["misses"][0]["reason"]
+
+
+@pytest.mark.parametrize("typed,expected", [
+    ("compuzone.com", "compuzone.co.kr"),    # the .com 403s; the shop is .co.kr
+    ("www.compuzone.com", "compuzone.co.kr"),
+    ("danawa.com", None),                    # already the domain we search
+    ("someshop.io", None),                   # nothing to confuse it with
+])
+def test_a_shop_named_under_the_wrong_tld_has_a_known_sibling(typed, expected):
+    from studyweb import sitesearch
+    assert sitesearch.sibling_site(typed) == expected
+
+
+def test_an_empty_domain_falls_back_to_the_shop_that_sells(monkeypatch):
+    # The model answered "컴퓨존에서" with sites=["compuzone.com"], which exists
+    # and returns nothing to anyone.
+    _wire(monkeypatch,
+          hits={"compuzone.co.kr": [SearchResult("라이젠5 9600X", "https://c/1")]},
+          pages={"https://c/1": JSONLD})
+    out = prices.find_prices("9600X", sites=["compuzone.com"])
+    [q] = out["quotes"]
+    assert q["price"] == 265000
+    assert q["site"] == "compuzone.co.kr"      # tagged with the domain that answered
+    assert out["misses"] == []
 
 
 def test_a_site_that_yields_nothing_is_reported_not_silently_dropped(monkeypatch):
